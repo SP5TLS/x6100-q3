@@ -1,0 +1,32 @@
+# Shared by the X6100 init scripts and tools.
+
+X6100_CONF=/mnt/x6100.conf
+X6100_DEFAULTS=/usr/share/x6100/x6100.conf
+
+# x6100_cfg KEY [DEFAULT]: a setting from /mnt/x6100.conf (KEY=value lines,
+# optional quotes), else from the shipped defaults, else DEFAULT.
+x6100_cfg() {
+	_v=
+	for _f in "$X6100_CONF" "$X6100_DEFAULTS"; do
+		[ -r "$_f" ] || continue
+		_v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$_f" | tail -n 1 |
+			tr -d '\r' | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")
+		[ -n "$_v" ] && break
+		# A key present but empty in the user's file still counts.
+		grep -q "^[[:space:]]*$1[[:space:]]*=" "$_f" && break
+	done
+	[ -n "$_v" ] && echo "$_v" || echo "${2:-}"
+}
+
+# x6100_on KEY [DEFAULT]: true when the setting is on/yes/true/1.
+x6100_on() {
+	case "$(x6100_cfg "$1" "${2:-off}" | tr '[:upper:]' '[:lower:]')" in
+		on|yes|true|1) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+x6100_log() {
+	echo "$*"
+	logger -t x6100 -- "$*" 2>/dev/null || true
+}

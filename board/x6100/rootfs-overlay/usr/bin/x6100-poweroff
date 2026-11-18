@@ -1,0 +1,12 @@
+#!/bin/sh
+# x6100-poweroff: switch the radio off. The BASE board holds the power:
+# it is asked to cut it (register 12, power-off bit only, which also
+# leaves PTT released), then init shuts the system down in the ~5 s
+# before the power goes. Without the BASE (bench supply) the system just
+# halts.
+sync
+# Register 12 at byte address 0x0030, value 1 << 16, little endian.
+i2ctransfer -y 0 w6@0x72 0x00 0x30 0x00 0x00 0x01 0x00 2>/dev/null ||
+	echo "x6100-poweroff: BASE board did not answer" >&2
+sleep 1
+kill -USR2 1

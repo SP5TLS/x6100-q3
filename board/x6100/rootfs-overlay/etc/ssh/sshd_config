@@ -1,0 +1,15 @@
+# OpenSSH server on the X6100. Root logs in with the password (123, or
+# SSH_PASSWORD from x6100.conf) or with a key from authorized_keys on the
+# X6100 partition of the SD card. Host keys are created on the first boot and kept
+# on /data.
+
+Include /etc/ssh/sshd_config.d/*.conf
+
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+AuthorizedKeysFile .ssh/authorized_keys
+UseDNS no
+ClientAliveInterval 30
+Subsystem sftp internal-sftp

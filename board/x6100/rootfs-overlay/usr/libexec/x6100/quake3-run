@@ -1,0 +1,60 @@
+#!/bin/sh
+# quake3-run GAME: Quake 3 (ioquake3) on the radio's screen. Run by
+# x6100-launcher, which waits for it and takes the screen back when the
+# game exits; `quake3 stop` (or the launcher's Stop) ends it.
+#
+# Game data: /data/quake3 (preloaded into private images only) and
+# /mnt/quake3 (quake3/ on the X6100 partition, where the web page puts
+# uploads), as ioquake3's base and home path; the game's settings,
+# screenshots and demos go to the second.
+# Controls: a USB or Bluetooth keyboard and mouse.
+
+. /usr/libexec/x6100/functions
+
+LOG=/data/log/quake3.log
+mkdir -p /data/log /mnt/quake3/baseq3
+
+game=${1:-$(x6100_cfg QUAKE3_GAME baseq3)}
+case $game in
+baseq3) gameargs= ;;
+# OpenArena is a base game of its own (standalone, no Quake 3 data).
+baseoa) gameargs="+set com_basegame baseoa" ;;
+*) gameargs="+set fs_game $game" ;;
+esac
+
+rotate=$(x6100_cfg QUAKE3_ROTATE 270)
+
+# Video: SDL's KMS/DRM driver on the Mali-400 (Mesa lima), desktop OpenGL
+# through EGL. Mesa has no libGL.so without X11, so SDL is given libEGL
+# as its GL library; every GL function then comes from eglGetProcAddress.
+export SDL_VIDEODRIVER=kmsdrm
+export SDL_VIDEO_GL_DRIVER=libEGL.so.1
+
+# Sound: PipeWire's ALSA plugin, so the game plays on the default sink
+# (Bluetooth headphones or speakers, a USB sound card, else a silent
+# sink). If the pipewire PCM cannot be opened there is no sound.
+export SDL_AUDIODRIVER=alsa AUDIODEV=pipewire
+export PIPEWIRE_RUNTIME_DIR=/run/pipewire XDG_RUNTIME_DIR=/run/pipewire
+
+# Mesa's shader cache in /root/.cache (on /data).
+export HOME=/root
+
+x6100_log "quake3: starting $game (rotate $rotate), log in $LOG"
+
+# The command line wins over q3config.cfg (also one brought from another
+# install): the panel's mode, the renderer, and enough hunk memory for
+# Team Arena. QUAKE3_ARGS is split into words on purpose and comes last.
+# shellcheck disable=SC2046,SC2086
+/usr/lib/ioquake3/ioquake3 \
+	+set fs_basepath /data/quake3 +set fs_homepath /mnt/quake3 \
+	$gameargs \
+	+set cl_renderer opengl1 \
+	+set r_mode -2 +set r_fullscreen 1 \
+	+set r_rotate "$rotate" \
+	+set com_hunkMegs 128 \
+	+set in_joystick 0 \
+	$(x6100_cfg QUAKE3_ARGS "") >"$LOG" 2>&1
+status=$?
+
+x6100_log "quake3: exited ($status)"
+exit $status

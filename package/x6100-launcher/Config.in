@@ -1,0 +1,12 @@
+config BR2_PACKAGE_X6100_LAUNCHER
+	bool "x6100-launcher"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_RUSTC
+	help
+	  What the X6100 shows at start-up: play Quake 3, set up Wi-Fi
+	  and Bluetooth, power off, with the radio's knobs and keys or a
+	  keyboard and mouse; and a web page on port 80 for uploading the
+	  game data and the same settings. Run by init in place of a
+	  radio UI (/usr/libexec/x6100/launcher-run).
+
+	  Source: launcher/ in this tree (Rust, no dependencies).

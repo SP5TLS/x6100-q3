@@ -1,0 +1,91 @@
+From: x6100-q3 <x6100-q3@localhost>
+Subject: [PATCH] sunxi: X6100: restart when DRAM fails a test after the set-up
+
+On the Xiegu X6100 (R16) the A33 DRAM set-up fails now and then: the
+size probe passes, yet nearly every word reads back wrong (16776961 of
+16777216 in a 64 MiB test), and the SPL hangs as soon as it moves its
+stack into DRAM, after "DRAM: 1024 MiB", leaving the screen blank. A
+second set-up in the same boot never worked (0 MiB); a fresh start does.
+
+Test 16 MiB after the set-up and the CPU clock switch; if it fails,
+restart through the watchdog. Also report the PMIC's power-on reason,
+key timing and latched key events before the set-up (diagnostics).
+
+---
+--- a/board/sunxi/board.c	2026-10-28 22:34:37
++++ b/board/sunxi/board.c	2026-11-01 14:43:44
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include <clock_legacy.h>
++#include <cpu_func.h>
+ #include <dm.h>
+ #include <env.h>
+ #include <hang.h>
+@@ -552,6 +553,45 @@
+ 	spl->dram_size = dram_size >> 20;
+ }
+ 
++/*
++ * X6100: the A33 DRAM set-up fails now and then: the size probe passes,
++ * yet nearly every word reads back wrong, and the SPL hangs as soon as it
++ * moves its stack into DRAM, leaving a blank screen. Test 16 MiB after
++ * the set-up (a failure is total, so that is plenty).
++ */
++static bool x6100_dram_ok(void)
++{
++	volatile u32 *p = (u32 *)CFG_SYS_SDRAM_BASE;
++	unsigned long i, n = (16 << 20) / 4;
++
++	for (i = 0; i < n; i++)
++		p[i] = (u32)i * 0x9e3779b9u ^ 0xa5a5a5a5u;
++	for (i = 0; i < n; i++)
++		if (p[i] != ((u32)i * 0x9e3779b9u ^ 0xa5a5a5a5u))
++			return false;
++	return true;
++}
++
++/*
++ * X6100 diagnostics: why the PMIC switched on (status 0x00 bit 0: power
++ * supply appearing rather than the power key), its key timing (0x36) and
++ * the key events it has latched (IRQ status 0x48..0x4c), to match against
++ * how long the power button was held.
++ */
++static void x6100_pmic_report(void)
++{
++	u8 v[8] = { 0 };
++	int i;
++
++	pmic_bus_read(0x00, &v[0]);
++	pmic_bus_read(0x01, &v[1]);
++	pmic_bus_read(0x36, &v[2]);
++	for (i = 0; i < 5; i++)
++		pmic_bus_read(0x48 + i, &v[3 + i]);
++	printf("PMIC: status %02x mode %02x key %02x irq %02x %02x %02x %02x %02x\n",
++	       v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
++}
++
+ void sunxi_board_init(void)
+ {
+ 	int power_failed = 0;
+@@ -635,6 +675,7 @@
+ 	power_failed |= axp_set_sw(IS_ENABLED(CONFIG_AXP_SW_ON));
+ #endif
+ #endif	/* CONFIG_AXPxxx_POWER */
++	x6100_pmic_report();
+ 	printf("DRAM:");
+ 	gd->ram_size = sunxi_dram_init();
+ 	printf(" %d MiB\n", (int)(gd->ram_size >> 20));
+@@ -651,6 +692,12 @@
+ 		clock_set_pll1(get_board_sys_clk());
+ 	else
+ 		printf("Failed to set core voltage! Can't set CPU frequency\n");
++
++	if (!x6100_dram_ok()) {
++		/* A second set-up in place never worked; a fresh start does. */
++		printf("DRAM: test failed, restarting\n");
++		reset_cpu();
++	}
+ }
+ #endif /* CONFIG_XPL_BUILD */
+ 

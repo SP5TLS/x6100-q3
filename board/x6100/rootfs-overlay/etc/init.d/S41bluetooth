@@ -1,0 +1,61 @@
+#!/bin/sh
+# Bluetooth after bluetoothd (S40): the radio on or blocked, x6100-btd
+# (pairing agent), adapter name, and reconnecting paired devices that
+# are already switched on.
+
+. /usr/libexec/x6100/functions
+
+adapter_setup() {
+	# The RTL8723BU's firmware loads a few seconds into the boot.
+	i=0
+	while ! bluetoothctl show 2>/dev/null | grep -q '^Controller'; do
+		i=$((i + 1))
+		[ $i -ge 60 ] && return 1
+		sleep 0.5
+	done
+	bluetoothctl power on >/dev/null 2>&1
+	bluetoothctl system-alias "$(x6100_cfg BT_NAME X6100)" >/dev/null 2>&1
+	bluetoothctl discoverable off >/dev/null 2>&1
+	bluetoothctl pairable off >/dev/null 2>&1
+	# Give headphones that page us first a moment, then call the rest.
+	sleep 3
+	/usr/bin/x6100-bt reconnect >/dev/null 2>&1
+}
+
+start() {
+	printf 'Starting Bluetooth: '
+	if ! x6100_on BLUETOOTH on; then
+		# The adapter may not have appeared yet: block it once it has.
+		(
+			i=0
+			while [ -z "$(ls /sys/class/bluetooth 2>/dev/null)" ] && [ $i -lt 60 ]; do
+				sleep 0.5
+				i=$((i + 1))
+			done
+			rfkill block bluetooth
+		) >/dev/null 2>&1 &
+		echo "off (x6100.conf)"
+		return 0
+	fi
+	rfkill unblock bluetooth 2>/dev/null
+
+	start-stop-daemon -S -q -b -m -p /run/x6100-btd.pid -x /usr/sbin/x6100-btd
+
+	adapter_setup >/dev/null 2>&1 &
+	echo "OK"
+}
+
+stop() {
+	printf 'Stopping Bluetooth: '
+	start-stop-daemon -K -q -p /run/x6100-btd.pid 2>/dev/null
+	rm -f /run/x6100-btd.pid /run/x6100/bt-pairing
+	echo "OK"
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart) stop; start ;;
+*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

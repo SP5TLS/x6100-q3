@@ -1,0 +1,147 @@
+# Builds the SD card image the way scripts/docker-build.sh --dist does on
+# a desk: in the pinned container (docker/Dockerfile), from the committed
+# sources only. Every run uploads the image together with Buildroot's
+# legal-info (licences and the source code of everything in the image),
+# which has to go along with the image wherever it is shared. A tag v*
+# also publishes both as a GitHub release.
+#
+# Actions are pinned by commit; the comment names the release.
+
+name: Image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Launcher and licences
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Rust that Buildroot 2026.02.3 builds the launcher with.
+      - name: Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+
+      - name: Launcher tests
+        working-directory: launcher
+        run: |
+          cargo +1.88.0 test --locked
+          cargo +1.88.0 clippy --locked --all-targets -- -D warnings
+
+      - name: REUSE (every file has a licence)
+        run: pipx run --spec 'reuse[charset-normalizer]==6.3.0' reuse lint
+
+  image:
+    name: SD card image
+    needs: checks
+    runs-on: ubuntu-24.04
+    # Hosted runners stop jobs at 6 hours; a full build takes 1.5 to 3.
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # git describe names the image after the latest tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The build tree, legal-info and image need some 25 GB.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            /usr/local/share/boost /usr/local/share/powershell
+          docker image prune --all --force >/dev/null
+          df -h /
+
+      # Buildroot's downloads (all checked against their hashes), so runs do
+      # not fetch the same 2 GB from upstream servers every time.
+      - name: Download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/x6100-dl
+          key: dl-${{ hashFiles('Makefile', 'configs/*', 'package/*/*.mk', 'package/*/*.hash', 'board/x6100/patches/*/*.hash') }}
+          restore-keys: dl-
+
+      - name: Build (scripts/docker-build.sh --dist)
+        env:
+          X6100_DL_VOLUME: /home/runner/x6100-dl
+        run: |
+          mkdir -p "$X6100_DL_VOLUME"
+          scripts/docker-build.sh --dist
+          ls -l images/
+          # The cache action runs as this user; Buildroot ran as root.
+          sudo chown -R "$(id -u):$(id -g)" "$X6100_DL_VOLUME" images
+
+      - name: Name the files
+        id: files
+        run: |
+          img=$(ls images/x6100-q3-*.img.xz)
+          legal=$(ls images/x6100-q3-*-legal-info.tar)
+          echo "image=$img" >>"$GITHUB_OUTPUT"
+          echo "legal=$legal" >>"$GITHUB_OUTPUT"
+          {
+            echo "### $(basename "$img")"
+            echo
+            echo "| File | Size |"
+            echo "|---|---|"
+            echo "| $(basename "$img") | $(du -h "$img" | cut -f1) |"
+            echo "| $(basename "$legal") | $(du -h "$legal" | cut -f1) |"
+            echo
+            echo "Share the legal-info archive along with the image."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # Uploaded as they are: both are compressed already.
+      - name: Upload the image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.files.outputs.image }}
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload legal-info (licences and sources for the image)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.files.outputs.legal }}
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: x6100-q3-*
+          path: out
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l out
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "SD card image for the Xiegu X6100 (write the .img.xz with balenaEtcher or Raspberry Pi Imager). No game data is included; see the README. The legal-info archive holds the licences and the complete source code of the software in the image."

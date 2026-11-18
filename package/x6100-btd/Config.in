@@ -1,0 +1,14 @@
+config BR2_PACKAGE_X6100_BTD
+	bool "x6100-btd"
+	depends on BR2_PACKAGE_BLUEZ5_UTILS
+	depends on BR2_USE_WCHAR # libglib2
+	depends on BR2_TOOLCHAIN_HAS_THREADS # libglib2
+	depends on BR2_USE_MMU # libglib2
+	select BR2_PACKAGE_LIBGLIB2
+	help
+	  Bluetooth pairing agent: accepts pairing only while a pairing
+	  window is open (x6100-bt pair / discoverable), with "Just
+	  Works" for keyboards, mice and headphones.
+
+comment "x6100-btd needs bluez5-utils"
+	depends on !BR2_PACKAGE_BLUEZ5_UTILS

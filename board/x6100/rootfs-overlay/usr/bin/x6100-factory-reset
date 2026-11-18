@@ -1,0 +1,13 @@
+#!/bin/sh
+# x6100-factory-reset: forget all system state on /data (Wi-Fi networks,
+# Bluetooth pairings, SSH host keys, hostname, logs) and switch off. Kept:
+# game data and the X6100 partition (/mnt: x6100.conf, quake3/).
+if [ "$1" != "--yes" ]; then
+	echo "This erases Wi-Fi, Bluetooth, SSH keys and other system state."
+	echo "Run 'x6100-factory-reset --yes' to do it."
+	exit 1
+fi
+touch /data/.factory-reset
+sync
+# A warm reboot does not come back on this board: power off instead.
+exec /usr/bin/x6100-poweroff

@@ -1,0 +1,30 @@
+# Applied on top of A33-OLinuXino_defconfig (same SoC family and PMIC).
+
+CONFIG_DEFAULT_DEVICE_TREE="sun8i-r16-xiegu-x6100"
+CONFIG_IDENT_STRING=" X6100"
+
+# DRAM timing of the X6100 board (stock boot0 values).
+CONFIG_DRAM_CLK=432
+CONFIG_DRAM_ZQ=15291
+# CONFIG_DRAM_ODT_EN is not set
+
+# SD card (mmc0) plus the internal eMMC (mmc2).
+CONFIG_MMC_SUNXI_SLOT_EXTRA=2
+# 3.3 V I/O rail, as AetherX6100Buildroot's U-Boot sets it on this board
+# (the sun8i default is 3.0 V).
+CONFIG_AXP_DCDC1_VOLT=3300
+
+# Linux owns the panel: U-Boot has no ST7701 init sequence, so keep its
+# LCD driver away from the TCON and backlight.
+# CONFIG_VIDEO_SUNXI is not set
+# CONFIG_VIDEO is not set
+
+# Nothing to boot from USB; skipping it saves time.
+# CONFIG_USB_MUSB_HOST is not set
+# CONFIG_USB_EHCI_HCD is not set
+# CONFIG_USB_OHCI_HCD is not set
+# CONFIG_REGULATOR_AXP_DRIVEVBUS is not set
+# CONFIG_REGULATOR_AXP_USB_POWER is not set
+
+# Boot straight away (extlinux.conf on the root partition).
+CONFIG_BOOTDELAY=0

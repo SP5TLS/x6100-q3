@@ -1,0 +1,354 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X6100 Quake 3</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1d232b; --dim: #5d6875;
+  --line: #d9dee4; --accent: #2f6fd6; --ok: #1f883d; --err: #cf222e; --busy: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #10141a; --card: #1a212b; --text: #e8eaed; --dim: #8b97a5;
+          --line: #2c3643; --accent: #5b93f0; --ok: #3fb950; --err: #ff6b5e; --busy: #e3b341; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--card); }
+header h1 { margin: 0; font-size: 20px; }
+header .st { color: var(--dim); font-size: 13px; margin-top: 2px; }
+main { max-width: 920px; margin: 0 auto; padding: 12px 16px 40px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; margin: 14px 0; }
+h2 { margin: 0 0 10px; font-size: 17px; }
+p { margin: 6px 0; }
+.dim { color: var(--dim); font-size: 13px; }
+button { font: inherit; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line);
+         background: var(--bg); color: var(--text); cursor: pointer; }
+button.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+table { width: 100%; border-collapse: collapse; }
+td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--dim); font-weight: 600; font-size: 13px; }
+td.r, th.r { text-align: right; white-space: nowrap; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+input[type=text], input[type=password], select { font: inherit; padding: 6px 8px; border-radius: 7px;
+         border: 1px solid var(--line); background: var(--bg); color: var(--text); min-width: 0; }
+.ok { color: var(--ok); } .err { color: var(--err); } .busy { color: var(--busy); }
+progress { width: 100%; height: 10px; }
+#note { min-height: 1.4em; }
+.wrap { overflow-x: auto; }
+code { font-size: 13px; }
+footer { color: var(--dim); font-size: 12px; max-width: 920px; margin: 0 auto; padding: 0 16px 30px; }
+footer a, a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>X6100 · Quake 3</h1>
+  <div class="st" id="status">…</div>
+</header>
+<main>
+  <div id="note" class="dim"></div>
+
+  <section>
+    <h2>Play</h2>
+    <div id="games"></div>
+    <div class="row" id="playing"></div>
+  </section>
+
+  <section>
+    <h2>Game data</h2>
+    <p>The game files are not part of this system: use your own copy of
+      Quake III Arena. <code>baseq3/pak0.pk3</code> comes from the game;
+      <code>pak1.pk3</code> to <code>pak8.pk3</code> from the free 1.32 point release
+      (<a href="https://ioquake3.org/extras/patch-data/" target="_blank" rel="noopener">ioquake3.org/extras/patch-data</a>,
+      unzip it first). Team Arena also needs <code>missionpack/pak0.pk3</code> to <code>pak3.pk3</code>.</p>
+    <p class="dim">Choose your game's folder (the one with <code>baseq3</code> in it) and every
+      <code>.pk3</code> and <code>.cfg</code> in it is sent, each into the folder of the same name on the
+      radio. Loose files go into the folder chosen here.</p>
+    <div class="row">
+      <label>Loose files go to <select id="target"></select></label>
+    </div>
+    <div class="row">
+      <input type="file" id="pickdir" webkitdirectory multiple hidden>
+      <input type="file" id="pickfiles" multiple accept=".pk3,.cfg" hidden>
+      <button onclick="pick('pickdir')">Choose a folder…</button>
+      <button onclick="pick('pickfiles')">Choose files…</button>
+      <span class="dim" id="free"></span>
+    </div>
+    <div id="plan"></div>
+    <div id="files" class="wrap"></div>
+  </section>
+
+  <section>
+    <h2>Wi-Fi</h2>
+    <div class="row" id="wifistate"></div>
+    <div id="nets" class="wrap"></div>
+    <div class="row">
+      <input type="text" id="ssid" placeholder="Network name" maxlength="32">
+      <input type="password" id="pw" placeholder="Password" maxlength="63">
+      <button onclick="wifiConnect(val('ssid'), val('pw'))">Connect</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Bluetooth</h2>
+    <p class="dim">Keyboards, mice, headphones and speakers. Put the device in pairing mode, then Scan.</p>
+    <div class="row" id="btstate"></div>
+    <div id="bt" class="wrap"></div>
+  </section>
+
+  <section>
+    <h2>Power</h2>
+    <div class="row"><button onclick="powerOff()">Switch the radio off</button></div>
+  </section>
+</main>
+<footer>
+  <p id="release"></p>
+  <p><a href="/legal/">Licences</a> of the software in this system · <a href="/about">About this launcher</a></p>
+  <p>Quake and Quake III Arena are trademarks of id Software LLC, a ZeniMax Media company; Xiegu and
+    X6100 are trademarks of their owner. This system is an independent project, not affiliated with or
+    endorsed by them. No game data is included.</p>
+</footer>
+<script>
+"use strict";
+let S = null, FILES = null, UPLOADING = false;
+const $ = id => document.getElementById(id);
+const val = id => $(id).value;
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB";
+
+function note(text, cls) { const n = $("note"); n.className = cls || "dim"; n.textContent = text || ""; }
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.method = opts.method || "POST";
+  opts.headers = Object.assign({"X-Requested-With": "x6100"}, opts.headers || {});
+  const r = await fetch(path, opts);
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = {ok: r.ok, message: r.statusText}; }
+  if (!r.ok || j.ok === false) throw new Error(j.message || r.statusText);
+  return j;
+}
+
+async function act(label, fn) {
+  note(label + "…", "busy");
+  try { const j = await fn(); note(j && j.message ? j.message : "Done", "ok"); }
+  catch (e) { note(label + ": " + e.message, "err"); }
+  refresh();
+}
+
+function form(o) { return {headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: new URLSearchParams(o).toString()}; }
+
+async function refresh() {
+  try {
+    S = await (await fetch("/api/state")).json();
+  } catch (e) { $("status").textContent = "The radio does not answer."; return; }
+  render();
+}
+
+async function refreshFiles() {
+  try { FILES = await (await fetch("/api/files")).json(); } catch (e) { return; }
+  renderFiles();
+}
+
+function render() {
+  const ip = S.ips.length ? S.ips.map(x => x[1]).join(", ") : "no address";
+  const w = !S.wifi.enabled ? "Wi-Fi off" : (S.wifi.connection ? "Wi-Fi " + S.wifi.connection : "Wi-Fi " + (S.wifi.state || "?"));
+  const bt = !S.bt.present ? "no Bluetooth" : (S.bt.powered ? "Bluetooth on" : "Bluetooth off");
+  let st = `${S.host} · ${ip} · ${w} · ${bt}`;
+  if (S.busy) st += " · " + S.busy + "…";
+  $("status").textContent = st;
+  $("release").textContent = S.release.replace(/\n/g, " · ");
+
+  // Games.
+  let h = "<table>";
+  for (const g of S.games) {
+    const ready = g.missing.length === 0;
+    h += `<tr><td>${esc(g.title)} <span class="dim">(${esc(g.id)})</span></td><td class="${ready ? "ok" : "dim"}">` +
+      (ready ? "ready" : "needs " + g.missing.map(esc).join(", ")) +
+      `</td><td class="r"><button class="main" ${ready && !S.playing ? "" : "disabled"} data-g="${esc(g.id)}" onclick="play(this.dataset.g)">Play</button></td></tr>`;
+  }
+  $("games").innerHTML = h + "</table>";
+  $("playing").innerHTML = S.playing
+    ? `<span>Playing ${esc(S.playing.game)} for ${Math.floor(S.playing.seconds / 60)} min.</span> <button onclick="act('Stopping', () => api('/api/stop'))">Stop the game</button>`
+    : "";
+
+  const t = $("target"), keep = t.value;
+  const ids = Array.from(new Set(["baseq3", "missionpack", "baseoa"].concat(S.games.map(g => g.id))));
+  if (t.options.length !== ids.length) {
+    t.innerHTML = ids.map(i => `<option>${esc(i)}</option>`).join("");
+    t.value = keep || "baseq3";
+  }
+  $("free").textContent = S.free != null ? mb(S.free) + " free on the card" : "";
+  if (S.upload && !UPLOADING) note(`The radio is receiving ${S.upload.name} (${Math.floor(100 * S.upload.done / Math.max(1, S.upload.total))}%)`, "busy");
+
+  // Wi-Fi.
+  $("wifistate").innerHTML = `<span>${esc(w)}${S.ips.length ? " · " + esc(ip) : ""}</span>` +
+    `<button onclick="act('Wi-Fi', () => api('/api/wifi/radio?on=${S.wifi.enabled ? 0 : 1}'))">${S.wifi.enabled ? "Switch off" : "Switch on"}</button>` +
+    `<button onclick="act('Scanning', () => api('/api/wifi/scan'))">Scan</button>`;
+  let n = "<table><tr><th>Network</th><th>Signal</th><th>Security</th><th></th></tr>";
+  const listed = new Set();
+  for (const x of S.networks) {
+    listed.add(x.ssid);
+    const saved = S.saved.includes(x.ssid), cur = S.wifi.connection === x.ssid;
+    n += `<tr><td>${esc(x.ssid)}${cur ? ' <span class="ok">connected</span>' : saved ? ' <span class="dim">saved</span>' : ""}</td>` +
+      `<td>${x.signal}%</td><td>${esc(x.security || "open")}</td><td class="r">` +
+      (cur ? "" : `<button onclick="wifiPick(this)" data-ssid="${esc(x.ssid)}" data-open="${x.security ? 0 : 1}" data-saved="${saved ? 1 : 0}">Connect</button> `) +
+      (saved ? `<button onclick="wifiForget(this)" data-ssid="${esc(x.ssid)}">Forget</button>` : "") + "</td></tr>";
+  }
+  for (const s of S.saved) {
+    if (listed.has(s)) continue;
+    const cur = S.wifi.connection === s;
+    n += `<tr><td>${esc(s)} <span class="${cur ? "ok" : "dim"}">${cur ? "connected" : "saved"}</span></td><td></td><td></td><td class="r">` +
+      (cur ? "" : `<button onclick="wifiPick(this)" data-ssid="${esc(s)}" data-open="0" data-saved="1">Connect</button> `) +
+      `<button onclick="wifiForget(this)" data-ssid="${esc(s)}">Forget</button></td></tr>`;
+  }
+  $("nets").innerHTML = n + "</table>";
+
+  // Bluetooth.
+  $("btstate").innerHTML = !S.bt.present ? "<span>No Bluetooth adapter.</span>" :
+    `<span>${S.bt.powered ? "On" : "Off"} · ${esc(S.bt.name)}</span>` +
+    `<button onclick="act('Bluetooth', () => api('/api/bt/radio?on=${S.bt.powered ? 0 : 1}'))">${S.bt.powered ? "Switch off" : "Switch on"}</button>` +
+    (S.bt.powered ? `<button onclick="act('Looking for devices (12 s)', () => api('/api/bt/scan'))">Scan</button>` : "");
+  let b = "<table><tr><th>Device</th><th>Kind</th><th>State</th><th></th></tr>";
+  for (const d of S.bt_paired) {
+    b += `<tr><td>${esc(d.name)}</td><td>${esc(d.kind)}</td><td>${d.connected ? '<span class="ok">connected</span>' : "paired"}</td><td class="r">` +
+      `<button data-c="${d.connected ? "disconnect" : "connect"}" data-m="${esc(d.mac)}" onclick="bt(this)">${d.connected ? "Disconnect" : "Connect"}</button> ` +
+      `<button data-c="forget" data-m="${esc(d.mac)}" onclick="bt(this)">Forget</button></td></tr>`;
+  }
+  for (const d of S.bt_found) {
+    b += `<tr><td>${esc(d.name)}</td><td>${esc(d.kind)}</td><td class="dim">${d.rssi != null ? d.rssi + " dBm" : ""}</td>` +
+      `<td class="r"><button class="main" data-c="pair" data-m="${esc(d.mac)}" onclick="bt(this)">Pair</button></td></tr>`;
+  }
+  $("bt").innerHTML = b + "</table>";
+}
+
+function renderFiles() {
+  let h = "";
+  for (const r of FILES.roots) {
+    h += `<h3 style="font-size:15px;margin:14px 0 4px">${esc(r.path)} <span class="dim">${r.writable ? "(the X6100 partition)" : "(built into this card's image, read-only here)"}</span></h3>`;
+    if (!r.files.length) { h += '<p class="dim">Empty.</p>'; continue; }
+    h += "<table><tr><th>Folder</th><th>File</th><th class='r'>Size</th><th></th></tr>";
+    for (const f of r.files) {
+      h += `<tr><td>${esc(f.game)}</td><td>${esc(f.name)}</td><td class="r">${mb(f.size)}</td><td class="r">` +
+        (r.writable ? `<button data-g="${esc(f.game)}" data-n="${esc(f.name)}" onclick="del(this)">Delete</button>` : "") + "</td></tr>";
+    }
+    h += "</table>";
+  }
+  $("files").innerHTML = h;
+}
+
+function play(g) { act("Starting " + g, () => api("/api/play?game=" + encodeURIComponent(g))); }
+function bt(el) {
+  const cmd = el.dataset.c, mac = el.dataset.m;
+  act("Bluetooth " + cmd, () => api(`/api/bt/do?cmd=${encodeURIComponent(cmd)}&mac=${encodeURIComponent(mac)}`));
+}
+function del(el) {
+  const g = el.dataset.g, n = el.dataset.n;
+  if (!confirm(`Delete ${g}/${n} from the radio?`)) return;
+  act("Deleting", () => api(`/api/delete?game=${encodeURIComponent(g)}&name=${encodeURIComponent(n)}`)).then(refreshFiles);
+}
+function wifiConnect(ssid, pw) {
+  if (!ssid) { note("Network name?", "err"); return; }
+  act("Connecting to " + ssid, () => api("/api/wifi/connect", form({ssid: ssid, password: pw || ""})));
+  $("pw").value = "";
+}
+function wifiPick(el) {
+  const ssid = el.dataset.ssid;
+  if (el.dataset.open === "1" || el.dataset.saved === "1") { wifiConnect(ssid, ""); return; }
+  $("ssid").value = ssid; $("pw").focus();
+  note("Type the password for " + ssid + ", then Connect.");
+}
+function wifiForget(el) {
+  const name = el.dataset.ssid;
+  if (!confirm(`Forget ${name}? If it is the network you use now, the radio leaves it.`)) return;
+  act("Forgetting", () => api("/api/wifi/forget", form({name: name})));
+}
+function powerOff() {
+  if (!confirm("Switch the radio off?")) return;
+  act("Switching off", () => api("/api/poweroff"));
+}
+
+// Uploads.
+let PLAN = [];
+function pick(id) { const i = $(id); i.value = ""; i.click(); }
+$("pickdir").onchange = e => plan(e.target.files, true);
+$("pickfiles").onchange = e => plan(e.target.files, false);
+
+const okName = s => /^[A-Za-z0-9_.-]{1,64}$/.test(s) && s[0] !== ".";
+function plan(files, fromDir) {
+  const target = $("target").value || "baseq3";
+  const have = new Map();
+  if (FILES) for (const r of FILES.roots) for (const f of r.files) have.set((f.game + "/" + f.name).toLowerCase(), f.size);
+  PLAN = [];
+  for (const f of files) {
+    const name = f.name.toLowerCase();
+    if (!/\.(pk3|cfg)$/.test(name)) continue;
+    const parts = (f.webkitRelativePath || f.name).split("/");
+    let game = fromDir && parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : target;
+    if (!okName(game)) game = target;
+    if (!okName(name)) continue;
+    const same = have.get(game + "/" + name) === f.size;
+    PLAN.push({file: f, game: game, name: name, skip: same});
+  }
+  renderPlan();
+}
+
+function renderPlan() {
+  if (!PLAN.length) { $("plan").innerHTML = '<p class="dim">No .pk3 or .cfg files there.</p>'; return; }
+  const todo = PLAN.filter(p => !p.skip);
+  let h = "<table><tr><th>To</th><th>File</th><th class='r'>Size</th><th style='width:35%'></th></tr>";
+  PLAN.forEach((p, i) => {
+    h += `<tr><td>${esc(p.game)}</td><td>${esc(p.name)}</td><td class="r">${mb(p.file.size)}</td>` +
+      `<td id="up${i}" class="dim">${p.skip ? "already on the radio" : ""}</td></tr>`;
+  });
+  h += "</table>";
+  const total = todo.reduce((a, p) => a + p.file.size, 0);
+  h += `<div class="row"><button class="main" id="go" ${todo.length ? "" : "disabled"} onclick="upload()">Send ${todo.length} file(s), ${mb(total)}</button>` +
+    `<button onclick="PLAN=[];$('plan').innerHTML=''">Cancel</button></div>`;
+  $("plan").innerHTML = h;
+}
+
+function send(p, cell) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", `/api/upload?game=${encodeURIComponent(p.game)}&name=${encodeURIComponent(p.name)}`);
+    x.setRequestHeader("X-Requested-With", "x6100");
+    x.upload.onprogress = e => { if (e.lengthComputable) cell.innerHTML = `<progress max="${e.total}" value="${e.loaded}"></progress>`; };
+    x.onload = () => {
+      let m = x.statusText;
+      try { m = JSON.parse(x.responseText).message; } catch (e) {}
+      if (x.status === 200) resolve(); else reject(new Error(m));
+    };
+    x.onerror = () => reject(new Error("connection lost"));
+    x.send(p.file);
+  });
+}
+
+async function upload() {
+  if (UPLOADING) return;
+  UPLOADING = true;
+  $("go").disabled = true;
+  let n = 0, bad = 0;
+  for (let i = 0; i < PLAN.length; i++) {
+    const p = PLAN[i], cell = $("up" + i);
+    if (p.skip) continue;
+    note(`Sending ${p.game}/${p.name}…`, "busy");
+    try { await send(p, cell); cell.innerHTML = '<span class="ok">sent</span>'; p.skip = true; n++; }
+    catch (e) { cell.innerHTML = `<span class="err">${esc(e.message)}</span>`; bad++; }
+  }
+  UPLOADING = false;
+  note(bad ? `${n} sent, ${bad} failed` : `${n} file(s) sent`, bad ? "err" : "ok");
+  refresh(); refreshFiles();
+}
+
+refresh(); refreshFiles();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

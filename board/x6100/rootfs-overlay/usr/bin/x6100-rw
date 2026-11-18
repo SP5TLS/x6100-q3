@@ -1,0 +1,10 @@
+#!/bin/sh
+# x6100-rw [ro]: make the root filesystem writable for maintenance, or
+# read-only again. Changes there are lost at the next system update;
+# settings belong on /data (automatic for /etc, /var/lib and /root).
+if [ "$1" = ro ]; then
+	sync
+	mount -o remount,ro / && echo "/ is read-only"
+else
+	mount -o remount,rw / && echo "/ is writable; 'x6100-rw ro' when done"
+fi

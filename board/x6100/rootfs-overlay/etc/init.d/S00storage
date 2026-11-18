@@ -1,0 +1,82 @@
+#!/bin/sh
+# Storage layout (SD card):
+#   p1  x6100-root  ext4  /       read-only system
+#   p2  x6100-data  ext4  /data   system state: overlays for /etc,
+#                                 /var/lib and /root, logs
+#   p3  X6100       FAT32 /mnt    user files: x6100.conf, Quake 3 data
+#                                 (quake3/), created on the first boot
+#                                 in the rest of the card
+# Wipe /data/overlay (x6100-factory-reset) to return to factory settings.
+
+. /usr/libexec/x6100/functions
+
+overlay() {
+	# overlay DIR NAME: writable DIR, changes kept in /data/overlay/NAME.
+	mkdir -p "/data/overlay/$2/upper" "/data/overlay/$2/work"
+	mount -t overlay "overlay-$2" \
+		-o "lowerdir=$1,upperdir=/data/overlay/$2/upper,workdir=/data/overlay/$2/work" "$1"
+}
+
+make_user_partition() {
+	disk=$1
+	part=$2
+	x6100_log "storage: creating the X6100 partition in the free space of $disk"
+	echo 'type=c' | sfdisk --append --no-reread --quiet "$disk" || return 1
+	partx --add --nr 3 "$disk" 2>/dev/null || partx --update --nr 3 "$disk" || return 1
+	i=0
+	while [ ! -b "$part" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+	mkfs.vfat -F 32 -n X6100 "$part" >/dev/null || return 1
+}
+
+first_boot_files() {
+	[ -e /mnt/x6100.conf ] || cp /usr/share/x6100/x6100.conf /mnt/x6100.conf
+	[ -e /mnt/README.txt ] || cp /usr/share/x6100/README-card.txt /mnt/README.txt
+	mkdir -p /mnt/ssh
+	mkdir -p /mnt/quake3/baseq3
+}
+
+start() {
+	data=$(blkid -L x6100-data)
+	if [ -z "$data" ]; then
+		x6100_log "storage: no x6100-data partition, running without persistence"
+		mount -t tmpfs -o mode=0755 tmpfs /data
+	else
+		fsck.ext4 -p "$data" >/dev/null 2>&1
+		mount -t ext4 -o noatime "$data" /data
+	fi
+
+	if [ -e /data/.factory-reset ]; then
+		x6100_log "storage: factory reset"
+		rm -rf /data/overlay /data/log /data/.factory-reset
+	fi
+
+	overlay /etc etc
+	overlay /var/lib var-lib
+	overlay /root root
+	mkdir -p /data/log
+	hostname -F /etc/hostname
+
+	# /mnt: the FAT partition next to /data (p3 of the same card).
+	user=
+	if [ -n "$data" ]; then
+		disk=${data%p[0-9]*}
+		user=${disk}p3
+		[ -b "$user" ] || make_user_partition "$disk" "$user" || user=
+	fi
+	if [ -n "$user" ]; then
+		fsck.fat -a -w "$user" >/dev/null 2>&1
+		if mount -t vfat -o rw,noatime,flush,utf8=1,shortname=mixed,umask=000 "$user" /mnt; then
+			first_boot_files
+		fi
+	fi
+}
+
+case "$1" in
+start)
+	start
+	;;
+stop)
+	sync
+	;;
+esac
+exit 0

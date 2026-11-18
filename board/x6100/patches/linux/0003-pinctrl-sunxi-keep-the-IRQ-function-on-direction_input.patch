@@ -1,0 +1,36 @@
+From: x6100-q3 <x6100-q3@localhost>
+Subject: [PATCH] pinctrl: sunxi: keep the IRQ function on direction_input of an IRQ line
+
+A pin delivering an interrupt is muxed to the "irq" function when the
+interrupt is requested. gpio_direction_input() on that line switched it
+to the plain GPIO input function, and nothing switched it back: the line
+still read correctly but raised no more interrupts.
+
+gpio-matrix-keypad does exactly that, on every row, at every scan (rows
+are its interrupt lines). On the Xiegu X6100 (R16), the first scan,
+when the keypad is opened, left all five rows without interrupts and no
+key was ever reported again; the rotary encoders on the same controller
+kept working.
+
+The IRQ function is an input, so treat the request as done. Reading the
+level in IRQ mode is unchanged (irq_read_needs_mux covers the SoCs that
+need the input function for that).
+
+---
+--- a/drivers/pinctrl/sunxi/pinctrl-sunxi.c	2026-10-26 00:14:52
++++ b/drivers/pinctrl/sunxi/pinctrl-sunxi.c	2026-10-26 00:14:52
+@@ -955,6 +955,14 @@
+ 					unsigned offset)
+ {
+ 	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
++
++	/*
++	 * A line used as an interrupt is muxed to the IRQ function, which is
++	 * an input already. Switching it to the plain GPIO input function
++	 * would silently stop its interrupts until it is requested again.
++	 */
++	if (gpiochip_line_is_irq(chip, offset))
++		return 0;
+ 
+ 	return sunxi_pmx_gpio_set_direction(pctl->pctl_dev, NULL,
+ 					    chip->base + offset, true);

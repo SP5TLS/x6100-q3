@@ -1,0 +1,7 @@
+Public domain.
+
+The file under this identifier, launcher/fonts/10x20.bdf, is a subset of
+the X11 "misc-fixed" 10x20 font, whose COPYRIGHT property and COPYING
+file (X.Org's font-misc-misc package) say:
+
+  "Public domain font.  Share and enjoy."

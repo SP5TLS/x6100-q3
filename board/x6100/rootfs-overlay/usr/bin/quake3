@@ -1,0 +1,64 @@
+#!/bin/sh
+# quake3 [GAME]: play Quake 3 on the radio's screen (from a shell; the
+# launcher's menu and web page do the same).
+#
+#   quake3                 the game in QUAKE3_GAME (x6100.conf), else baseq3
+#   quake3 missionpack     Team Arena; any mod directory works the same
+#   quake3 baseoa          OpenArena (its own base game, no Quake 3 data)
+#   quake3 list            games found, and the files each one still needs
+#   quake3 stop            end the game; the launcher comes back
+#
+# Game data: /data/quake3/<game>/ and /mnt/quake3/<game>/ (quake3/ on the
+# X6100 partition, filled by the web page at http://x6100.local/).
+# Quake 3 needs pak0.pk3 from your copy of the game and pak1.pk3 to
+# pak8.pk3 from the 1.32 point release (ioquake3.org/extras/patch-data/)
+# in baseq3/; Team Arena also pak0.pk3 to pak3.pk3 in missionpack/.
+
+. /usr/libexec/x6100/functions
+
+api() {
+	# api PATH: POST to the launcher's web interface on this machine.
+	wget -q -O - --header 'X-Requested-With: x6100' --post-data '' \
+		"http://127.0.0.1$1" 2>/dev/null
+}
+
+case "${1:-}" in
+stop)
+	api /api/stop >/dev/null || {
+		# No launcher: end the game directly (ioquake3 can hang on
+		# SIGTERM in the GL driver, hence the KILL after 5 s).
+		pid=$(pidof ioquake3) || exit 0
+		kill -TERM $pid
+		i=0
+		while kill -0 $pid 2>/dev/null && [ $i -lt 50 ]; do
+			sleep 0.1
+			i=$((i + 1))
+		done
+		kill -0 $pid 2>/dev/null && kill -KILL $pid
+	}
+	exit 0
+	;;
+list)
+	exec /usr/bin/x6100-launcher --games
+	;;
+-* | help)
+	sed -n '2,/^$/s/^# \{0,1\}//p' "$0" >&2
+	exit 2
+	;;
+esac
+
+case "${1:-}" in
+"") g=$(x6100_cfg QUAKE3_GAME baseq3) ;;
+ta | teamarena) g=missionpack ;;
+oa | openarena) g=baseoa ;;
+*) g=$1 ;;
+esac
+
+if out=$(api "/api/play?game=$g"); then
+	echo "Quake 3 ($g) starts on the radio's screen (log: /data/log/quake3.log)."
+	echo "Exit from its menu, press the power key, or run 'quake3 stop'."
+else
+	echo "Quake 3 ($g) did not start: ${out:-the launcher is not running}" >&2
+	/usr/bin/x6100-launcher --games >&2
+	exit 1
+fi

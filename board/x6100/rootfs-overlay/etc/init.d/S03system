@@ -1,0 +1,79 @@
+#!/bin/sh
+# Settings from /mnt/x6100.conf that apply to the whole system, and the
+# BASE board's control lines in a safe state.
+
+. /usr/libexec/x6100/functions
+
+gpio_out() {
+	# gpio_out N VALUE: export sysfs GPIO N as an output.
+	[ -d /sys/class/gpio/gpio"$1" ] || echo "$1" > /sys/class/gpio/export
+	# "high"/"low" set direction and level at once (no glitch).
+	if [ "$2" = 1 ]; then
+		echo high > /sys/class/gpio/gpio"$1"/direction
+	else
+		echo low > /sys/class/gpio/gpio"$1"/direction
+	fi
+}
+
+ssh_access() {
+	keys=
+	for f in /mnt/authorized_keys /mnt/ssh/authorized_keys; do
+		[ -r "$f" ] && keys="$keys $f"
+	done
+	if [ -n "$keys" ]; then
+		mkdir -p /root/.ssh
+		chmod 700 /root/.ssh
+		# shellcheck disable=SC2086
+		cat $keys | tr -d '\r' > /root/.ssh/authorized_keys.new
+		mv /root/.ssh/authorized_keys.new /root/.ssh/authorized_keys
+		chmod 600 /root/.ssh/authorized_keys
+	fi
+
+	pw=$(x6100_cfg SSH_PASSWORD "")
+	if [ -n "$pw" ]; then
+		echo "root:$pw" | chpasswd >/dev/null 2>&1 &&
+			x6100_log "ssh: root password set from x6100.conf"
+		# Do not leave the password readable on the card.
+		sed -i 's/^\([[:space:]]*SSH_PASSWORD[[:space:]]*=\).*/\1/' "$X6100_CONF"
+	fi
+}
+
+start() {
+	sysctl -q -w vm.swappiness=10 vm.vfs_cache_pressure=50 kernel.panic=10
+
+	gov=$(x6100_cfg CPU_GOVERNOR performance)
+	for p in /sys/devices/system/cpu/cpufreq/policy*; do
+		[ -w "$p/scaling_governor" ] && echo "$gov" > "$p/scaling_governor" 2>/dev/null
+	done
+
+	tz=$(x6100_cfg TZ UTC)
+	if [ -e "/usr/share/zoneinfo/$tz" ]; then
+		[ "$(readlink /etc/localtime)" = "/usr/share/zoneinfo/$tz" ] ||
+			ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+	fi
+
+	# Wi-Fi country, for cfg80211 when udev loads it (S10udevd).
+	country=$(x6100_cfg COUNTRY 00)
+	mkdir -p /etc/modprobe.d
+	echo "options cfg80211 ieee80211_regdom=$country" > /etc/modprobe.d/x6100-wifi.conf
+
+	# CW key up (gpio203, active low: low would key the transmitter, and
+	# low during a BASE reset starts its bootloader), BASE reset released
+	# (gpio204, active high). Floating, either can stop the BASE. Nothing
+	# here touches them again.
+	gpio_out 203 1
+	gpio_out 204 0
+	# Key backlight (PE15), for finding the keys the launcher uses.
+	gpio_out 143 1
+
+	ssh_access
+}
+
+case "$1" in
+start)
+	start
+	;;
+stop)
+	;;
+esac
+exit 0

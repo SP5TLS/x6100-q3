@@ -1,0 +1,12 @@
+#!/bin/sh
+# Writes /mnt/x6100-diag.txt a minute after boot (x6100-diag), so a radio
+# that cannot be reached over the network can still be debugged from the
+# SD card. Set DIAG_AT_BOOT=off in x6100.conf to skip it.
+. /usr/libexec/x6100/functions
+case "$1" in
+start)
+	x6100_on DIAG_AT_BOOT on || exit 0
+	(sleep 60; /usr/bin/x6100-diag) >/dev/null 2>&1 &
+	;;
+esac
+exit 0

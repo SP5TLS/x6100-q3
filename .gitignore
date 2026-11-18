@@ -1,0 +1,9 @@
+/buildroot/
+/output/
+/dl/
+/images/
+/secrets/
+/.work/
+/launcher/target/
+*.swp
+.DS_Store

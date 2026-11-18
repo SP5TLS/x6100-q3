@@ -1,0 +1,193 @@
+From: x6100-q3 <x6100-q3@localhost>
+Subject: [PATCH] drm/panel: st7701: add Jinglitai JLT4013A (Xiegu X6100)
+
+The Xiegu X6100 transceiver uses a 4" 480x800 Jinglitai JLT4013A panel:
+an ST7701S driven over the RGB interface, with its command bus on a
+4-wire (D/CX) SPI link. The driver already handles that combination
+(the "dc" GPIO), so the panel only needs a descriptor.
+
+The host (Allwinner R16 TCON) has 18 data lines. Let a descriptor state
+its bus format and colour depth so the TCON dithers 24-bit framebuffers
+down to RGB666 instead of truncating them.
+
+---
+--- a/Documentation/devicetree/bindings/display/panel/sitronix,st7701.yaml	2026-10-25 22:56:24
++++ b/Documentation/devicetree/bindings/display/panel/sitronix,st7701.yaml	2026-10-25 22:56:33
+@@ -28,6 +28,7 @@
+           - anbernic,rg28xx-panel
+           - densitron,dmt028vghmcmi-1a
+           - elida,kd50t048a
++          - jinglitai,jlt4013a
+           - techstar,ts8550b
+           - winstar,wf40eswaa6mnn0
+       - const: sitronix,st7701
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml	2026-10-25 22:56:24
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml	2026-10-25 22:56:33
+@@ -833,6 +833,8 @@
+     description: Jiandangjing Technology Co., Ltd.
+   "^jide,.*":
+     description: Jide Tech
++  "^jinglitai,.*":
++    description: Shenzhen Jinglitai Technology Co., Ltd.
+   "^joz,.*":
+     description: JOZ BV
+   "^jty,.*":
+--- a/drivers/gpu/drm/panel/panel-sitronix-st7701.c	2026-10-25 22:56:08
++++ b/drivers/gpu/drm/panel/panel-sitronix-st7701.c	2026-10-25 22:56:08
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/media-bus-format.h>
+ #include <linux/spi/spi.h>
+ 
+ #include <video/mipi_display.h>
+@@ -107,6 +108,10 @@
+ 	unsigned int lanes;
+ 	enum mipi_dsi_pixel_format format;
+ 	unsigned int panel_sleep_delay;
++
++	/* Optional: bus format and colour depth of the RGB interface. */
++	u32 bus_format;
++	u8 bpc;
+ 
+ 	/* TFT matrix driver configuration, panel specific. */
+ 	const u8	pv_gamma[16];	/* Positive voltage gamma control */
+@@ -540,6 +545,47 @@
+ 	ST7701_WRITE(st7701, 0xED, 0xAB, 0x89, 0x76, 0x54, 0x02, 0xFF, 0xFF,
+ 		   0xFF, 0xFF, 0xFF, 0xFF, 0x20, 0x45, 0x67, 0x98, 0xBA);
+ 	ST7701_WRITE(st7701, MIPI_DCS_SET_ADDRESS_MODE, 0);
++}
++
++static void jlt4013a_gip_sequence(struct st7701 *st7701)
++{
++	/*
++	 * Values from the panel vendor's init code that the generic
++	 * sequence does not produce: inversion and line timing, RGB
++	 * interface control (DE mode, porches), source pre-drive and
++	 * power control 3, then the undocumented GIP timing block.
++	 */
++	st7701_switch_cmd_bkx(st7701, true, 0);
++	ST7701_WRITE(st7701, ST7701_CMD2_BK0_INVSEL, 0x31, 0x03);
++	ST7701_WRITE(st7701, 0xC3, 0x02, 0x0C, 0x12);
++	ST7701_WRITE(st7701, 0xCC, 0x10);
++
++	st7701_switch_cmd_bkx(st7701, true, 1);
++	ST7701_WRITE(st7701, 0xB9, 0x10);
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_SPD1, 0x21, 0x36);
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_SPD2, 0x78);
++	msleep(120);
++
++	ST7701_WRITE(st7701, 0xE0, 0x00, 0x00, 0x02);
++	ST7701_WRITE(st7701, 0xE1, 0x08, 0x00, 0x0A, 0x00, 0x07, 0x00, 0x09,
++		   0x00, 0x00, 0x33, 0x33);
++	ST7701_WRITE(st7701, 0xE2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++		   0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
++	ST7701_WRITE(st7701, 0xE3, 0x00, 0x00, 0x33, 0x33);
++	ST7701_WRITE(st7701, 0xE4, 0x44, 0x44);
++	ST7701_WRITE(st7701, 0xE5, 0x0E, 0x2D, 0xA0, 0xA0, 0x10, 0x2D, 0xA0,
++		   0xA0, 0x0A, 0x2D, 0xA0, 0xA0, 0x0C, 0x2D, 0xA0, 0xA0);
++	ST7701_WRITE(st7701, 0xE6, 0x00, 0x00, 0x33, 0x33);
++	ST7701_WRITE(st7701, 0xE7, 0x44, 0x44);
++	ST7701_WRITE(st7701, 0xE8, 0x0D, 0x2D, 0xA0, 0xA0, 0x0F, 0x2D, 0xA0,
++		   0xA0, 0x09, 0x2D, 0xA0, 0xA0, 0x0B, 0x2D, 0xA0, 0xA0);
++	ST7701_WRITE(st7701, 0xEB, 0x02, 0x01, 0xE4, 0xE4, 0x44, 0x00, 0x40);
++	ST7701_WRITE(st7701, 0xEC, 0x02, 0x01);
++	ST7701_WRITE(st7701, 0xED, 0xAB, 0x89, 0x76, 0x54, 0x01, 0xFF, 0xFF,
++		   0xFF, 0xFF, 0xFF, 0xFF, 0x10, 0x45, 0x67, 0x98, 0xBA);
++
++	st7701_switch_cmd_bkx(st7701, false, 0);
++	ST7701_WRITE(st7701, MIPI_DCS_SET_PIXEL_FORMAT, 0x77);
+ }
+ 
+ static int st7701_prepare(struct drm_panel *panel)
+@@ -633,6 +679,12 @@
+ 
+ 	connector->display_info.width_mm = desc_mode->width_mm;
+ 	connector->display_info.height_mm = desc_mode->height_mm;
++
++	if (st7701->desc->bus_format)
++		drm_display_info_set_bus_formats(&connector->display_info,
++						 &st7701->desc->bus_format, 1);
++	if (st7701->desc->bpc)
++		connector->display_info.bpc = st7701->desc->bpc;
+ 
+ 	/*
+ 	 * TODO: Remove once all drm drivers call
+@@ -859,6 +911,61 @@
+ 	.gip_sequence = dmt028vghmcmi_1a_gip_sequence,
+ };
+ 
++static const struct drm_display_mode jlt4013a_mode = {
++	.clock		= 27500,
++
++	.hdisplay	= 480,
++	.hsync_start	= 480 + 38,
++	.hsync_end	= 480 + 38 + 12,
++	.htotal		= 480 + 38 + 12 + 12,
++
++	.vdisplay	= 800,
++	.vsync_start	= 800 + 18,
++	.vsync_end	= 800 + 18 + 8,
++	.vtotal		= 800 + 18 + 8 + 17,
++
++	.width_mm	= 52,
++	.height_mm	= 86,
++
++	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++};
++
++/*
++ * Jinglitai JLT4013A: 4" 480x800 IPS, ST7701S on the RGB interface with
++ * a 4-wire (D/CX) SPI command bus. Used in the Xiegu X6100. The host
++ * drives 18 bits, so the TCON dithers down from 24.
++ */
++static const struct st7701_panel_desc jlt4013a_desc = {
++	.mode = &jlt4013a_mode,
++	.panel_sleep_delay = 0,
++	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
++	.bpc = 6,
++
++	/* Raw register values from the vendor init code. */
++	.pv_gamma = {
++		0x40, 0xc9, 0x90, 0x0d, 0x0f, 0x04, 0x00, 0x07,
++		0x07, 0x1c, 0x04, 0x52, 0x0f, 0xdf, 0x26, 0xcf
++	},
++	.nv_gamma = {
++		0x40, 0xc9, 0xcf, 0x0c, 0x90, 0x04, 0x00, 0x07,
++		0x08, 0x1b, 0x06, 0x55, 0x13, 0x62, 0xe7, 0xcf
++	},
++	.nlinv = 1,
++	.vop_uv = 4675000,		/* VRHS 0x5b */
++	.vcom_uv = 1400000,		/* VCOM 0x68 */
++	.vgh_mv = 15000,		/* VGHSS 0x07 */
++	.vgl_mv = -9510,		/* VGLS 0x47 */
++	.avdd_mv = 6600,		/* PWCTRL2 0x21 */
++	.avcl_mv = -4600,
++	.gamma_op_bias = OP_BIAS_MIDDLE,	/* PWCTRL1 0x85 */
++	.input_op_bias = OP_BIAS_MIN,
++	.output_op_bias = OP_BIAS_MIN,
++	.t2d_ns = 1600,
++	.t3d_ns = 10400,
++	.eot_en = false,
++	.gip_sequence = jlt4013a_gip_sequence,
++};
++
+ static const struct drm_display_mode kd50t048a_mode = {
+ 	.clock          = 27500,
+ 
+@@ -1395,12 +1502,14 @@
+ 
+ static const struct of_device_id st7701_spi_of_match[] = {
+ 	{ .compatible = "anbernic,rg28xx-panel", .data = &rg28xx_desc },
++	{ .compatible = "jinglitai,jlt4013a", .data = &jlt4013a_desc },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, st7701_spi_of_match);
+ 
+ static const struct spi_device_id st7701_spi_ids[] = {
+ 	{ "rg28xx-panel" },
++	{ "jlt4013a" },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(spi, st7701_spi_ids);

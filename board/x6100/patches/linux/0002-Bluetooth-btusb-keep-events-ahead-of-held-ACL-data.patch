@@ -1,0 +1,54 @@
+From: x6100-q3 <x6100-q3@localhost>
+Subject: [PATCH] Bluetooth: btusb: keep events ahead of held ACL data
+
+With poll_sync, ACL data that arrives before the HCI event it depends on
+is held back until the next event or one polling interval. Two gaps let
+it through early anyway:
+
+- btusb_recv_event() woke rx_work before passing the event to the core,
+  so on SMP the worker could deliver the held data first;
+- the hold time was intr_interval jiffies, and a delay of one jiffy may
+  expire at the very next tick, i.e. almost at once with HZ=100/250.
+
+On the Xiegu X6100 (RTL8723BU, Wi-Fi and Bluetooth on one USB device
+behind a musb host) this made LE pairing fail at random: SMP key
+distribution arrived before Encryption Change and was dropped. Pass the
+event first and hold data for one jiffy more than the interval.
+
+---
+--- a/drivers/bluetooth/btusb.c	2026-10-25 22:56:53
++++ b/drivers/bluetooth/btusb.c	2026-10-25 22:56:53
+@@ -1221,12 +1221,20 @@
+ 
+ static int btusb_recv_event(struct btusb_data *data, struct sk_buff *skb)
+ {
++	int err;
++
++	/* Hand the event to the core before releasing the ACL data held
++	 * back behind it: woken first, rx_work can run on another CPU and
++	 * deliver that data ahead of the event it was waiting for.
++	 */
++	err = data->recv_event(data->hdev, skb);
++
+ 	if (data->intr_interval) {
+ 		/* Trigger dequeue immediately if an event is received */
+ 		schedule_delayed_work(&data->rx_work, 0);
+ 	}
+ 
+-	return data->recv_event(data->hdev, skb);
++	return err;
+ }
+ 
+ static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
+@@ -1306,7 +1314,10 @@
+ 		return data->recv_acl(data->hdev, skb);
+ 
+ 	skb_queue_tail(&data->acl_q, skb);
+-	schedule_delayed_work(&data->rx_work, data->intr_interval);
++	/* One jiffy more than the interval: a delay of N jiffies may expire
++	 * at the very next tick, i.e. after less than one polling interval.
++	 */
++	schedule_delayed_work(&data->rx_work, data->intr_interval + 1);
+ 
+ 	return 0;
+ }

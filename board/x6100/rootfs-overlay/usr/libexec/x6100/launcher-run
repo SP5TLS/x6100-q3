@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs x6100-launcher for init's respawn entry (/etc/inittab): the
+# on-screen menu, the web page on port 80, and Quake 3 when asked.
+# Log: /data/log/launcher.log (the game's own: /data/log/quake3.log).
+
+LOG=/data/log/launcher.log
+mkdir -p /data/log /run/x6100
+
+# Keep the log from growing without end.
+[ -f $LOG ] && [ "$(wc -c <$LOG)" -gt 1000000 ] && mv -f $LOG $LOG.old
+
+# A crash loop must not spin: after a quick exit, wait before init
+# starts the launcher again.
+started=$(date +%s)
+trap 'exit 0' TERM INT
+/usr/bin/x6100-launcher >>$LOG 2>&1
+status=$?
+if [ $(( $(date +%s) - started )) -lt 10 ]; then
+	sleep 5
+fi
+exit $status

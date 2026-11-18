@@ -1,0 +1,3 @@
+# Added to Buildroot's BusyBox configuration.
+# chpasswd: SSH_PASSWORD in x6100.conf (S03system).
+CONFIG_CHPASSWD=y

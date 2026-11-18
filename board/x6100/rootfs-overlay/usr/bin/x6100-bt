@@ -1,0 +1,238 @@
+#!/bin/sh
+# x6100-bt: Bluetooth on the X6100 from a shell or from x6100-launcher.
+#
+#   x6100-bt status                adapter state
+#   x6100-bt devices               paired devices
+#   x6100-bt scan [SECONDS] [all]  look for devices (default 12 s; named
+#                                  ones only, strongest first, unless all)
+#   x6100-bt pair MAC              pair, trust and connect (keyboard, ...)
+#   x6100-bt connect MAC
+#   x6100-bt disconnect MAC
+#   x6100-bt forget MAC
+#   x6100-bt discoverable [SECONDS]  let another device pair (default 120 s)
+#   x6100-bt on | off              switch the Bluetooth radio on or off
+#   x6100-bt reconnect             connect paired audio devices in range
+#
+# Output is one record per line, fields separated by ':' with ':' and '\'
+# in names escaped by '\' (like nmcli -t), so the launcher can parse it:
+#   status:   powered:discoverable:pairable:address:name
+#   devices:  MAC:connected:trusted:kind:name
+#   scan:     MAC:rssi:kind:name          (devices not paired yet)
+# kind is audio, headset, input, phone, computer or other.
+# Errors go to stderr; the exit status is 0 on success.
+
+PAIRING_FILE=/run/x6100/bt-pairing
+BTCTL="bluetoothctl"
+
+die() {
+	echo "x6100-bt: $*" >&2
+	exit 1
+}
+
+esc() {
+	sed -e 's/\\/\\\\/g' -e 's/:/\\:/g'
+}
+
+need_mac() {
+	echo "$1" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' ||
+		die "expected a device address like 00:11:22:33:44:55"
+}
+
+open_window() {
+	mkdir -p "${PAIRING_FILE%/*}"
+	echo $(( $(date +%s) + $1 )) > "$PAIRING_FILE"
+}
+
+close_window() {
+	rm -f "$PAIRING_FILE"
+}
+
+yesno() {
+	# yesno INFO FIELD: "1" when "FIELD: yes" is in bluetoothctl output.
+	echo "$1" | grep -q "^[[:space:]]*$2: yes" && echo 1 || echo 0
+}
+
+kind() {
+	# kind INFO: rough device kind from Icon / UUIDs.
+	icon=$(echo "$1" | sed -n 's/^[[:space:]]*Icon: //p')
+	case "$icon" in
+	audio-headset) echo headset ;;
+	audio-headphones | audio-card) echo audio ;;
+	input-*) echo input ;;
+	phone) echo phone ;;
+	computer) echo computer ;;
+	*)
+		if echo "$1" | grep -q 'UUID: Audio Sink'; then
+			echo audio
+		elif echo "$1" | grep -Eq 'UUID: (Handsfree|Headset) '; then
+			echo headset
+		else
+			echo other
+		fi
+		;;
+	esac
+}
+
+name_of() {
+	n=$(echo "$1" | sed -n 's/^[[:space:]]*Alias: //p' | head -n 1)
+	[ -n "$n" ] || n=$(echo "$1" | sed -n 's/^[[:space:]]*Name: //p' | head -n 1)
+	echo "$n" | esc
+}
+
+adapter_up() {
+	[ -n "$(ls /sys/class/bluetooth 2>/dev/null)" ] || die "no Bluetooth adapter"
+	$BTCTL show 2>/dev/null | grep -q 'Powered: yes' || die "Bluetooth is off"
+}
+
+paired_macs() {
+	$BTCTL devices Paired 2>/dev/null | sed -n 's/^Device \([0-9A-F:]\{17\}\) .*/\1/p'
+}
+
+cmd_status() {
+	info=$($BTCTL show 2>/dev/null) || die "no Bluetooth adapter"
+	addr=$(echo "$info" | sed -n 's/^Controller \([0-9A-F:]\{17\}\).*/\1/p' | head -n 1)
+	alias=$(echo "$info" | sed -n 's/^[[:space:]]*Alias: //p' | head -n 1 | esc)
+	echo "$(yesno "$info" Powered):$(yesno "$info" Discoverable):$(yesno "$info" Pairable):$(echo "$addr" | esc):$alias"
+}
+
+cmd_devices() {
+	for mac in $(paired_macs); do
+		info=$($BTCTL info "$mac" 2>/dev/null)
+		echo "$(echo "$mac" | esc):$(yesno "$info" Connected):$(yesno "$info" Trusted):$(kind "$info"):$(name_of "$info")"
+	done
+}
+
+cmd_scan() {
+	adapter_up
+	secs=${1:-12}
+	all=${2:-}
+	paired=$(paired_macs)
+	# Names and signal strength come from the live scan output: BlueZ drops
+	# unpaired devices (and RSSI) soon after discovery stops.
+	out=$($BTCTL --timeout "$secs" scan on 2>/dev/null | tr -d '\r\033' |
+		sed -e 's/\[[0-9;]*m//g')
+	echo "$out" | sed -n 's/^\[\(NEW\|CHG\)\] Device \([0-9A-F:]\{17\}\) .*/\2/p' | sort -u |
+	while read -r mac; do
+		echo "$paired" | grep -q "$mac" && continue
+		dashed=$(echo "$mac" | tr ':' '-')
+		name=$(echo "$out" | sed -n \
+			-e "s/^\[CHG\] Device $mac Name: //p" \
+			-e "s/^\[CHG\] Device $mac Alias: //p" \
+			-e "s/^\[NEW\] Device $mac //p" | grep -v "^$dashed\$" | tail -n 1)
+		info=$($BTCTL info "$mac" 2>/dev/null)
+		[ -n "$name" ] || name=$(echo "$info" | sed -n 's/^[[:space:]]*Name: //p' | head -n 1)
+		# Devices that never sent a name (beacons, phones in the background)
+		# are left out unless asked for.
+		if [ -z "$name" ]; then
+			[ "$all" = all ] || continue
+			name=$dashed
+		fi
+		rssi=$(echo "$out" | sed -n \
+			-e "s/^\[CHG\] Device $mac RSSI: .*(\(-\{0,1\}[0-9]*\)).*/\1/p" \
+			-e "s/^\[CHG\] Device $mac RSSI: \(-\{0,1\}[0-9]*\)\$/\1/p" | tail -n 1)
+		echo "${rssi:--999}	$(echo "$mac" | esc):${rssi}:$(kind "$info"):$(echo "$name" | esc)"
+	done | sort -rn | cut -f2-
+}
+
+cmd_pair() {
+	need_mac "$1"
+	adapter_up
+	open_window 90
+	$BTCTL pairable on >/dev/null 2>&1
+	# The device must be known to BlueZ: look for it if it is not.
+	$BTCTL info "$1" >/dev/null 2>&1 || $BTCTL --timeout 10 scan on >/dev/null 2>&1
+	if ! $BTCTL info "$1" 2>/dev/null | grep -q 'Paired: yes'; then
+		out=$($BTCTL --timeout 40 pair "$1" 2>&1)
+		if ! $BTCTL info "$1" 2>/dev/null | grep -q 'Paired: yes'; then
+			close_window
+			$BTCTL pairable off >/dev/null 2>&1
+			die "pairing with $1 failed: $(echo "$out" | grep -i 'fail\|error' | tail -n 1)"
+		fi
+	fi
+	$BTCTL trust "$1" >/dev/null 2>&1
+	close_window
+	$BTCTL pairable off >/dev/null 2>&1
+	cmd_connect "$1"
+}
+
+cmd_connect() {
+	need_mac "$1"
+	adapter_up
+	$BTCTL --timeout 20 connect "$1" >/dev/null 2>&1
+	$BTCTL info "$1" 2>/dev/null | grep -q 'Connected: yes' || die "could not connect to $1"
+}
+
+cmd_disconnect() {
+	need_mac "$1"
+	$BTCTL disconnect "$1" >/dev/null 2>&1 || die "could not disconnect $1"
+}
+
+cmd_forget() {
+	need_mac "$1"
+	$BTCTL remove "$1" >/dev/null 2>&1 || die "no device $1"
+}
+
+cmd_discoverable() {
+	adapter_up
+	secs=${1:-120}
+	open_window "$secs"
+	$BTCTL discoverable-timeout "$secs" >/dev/null 2>&1
+	$BTCTL pairable on >/dev/null 2>&1
+	$BTCTL discoverable on >/dev/null 2>&1 || die "cannot make the radio discoverable"
+	# Close the window on time even if BlueZ's own timeouts differ.
+	(
+		sleep "$secs"
+		close_window
+		$BTCTL discoverable off >/dev/null 2>&1
+		$BTCTL pairable off >/dev/null 2>&1
+	) >/dev/null 2>&1 &
+}
+
+cmd_on() {
+	rfkill unblock bluetooth 2>/dev/null
+	i=0
+	while [ -z "$(ls /sys/class/bluetooth 2>/dev/null)" ] && [ $i -lt 40 ]; do
+		sleep 0.5
+		i=$((i + 1))
+	done
+	$BTCTL power on >/dev/null 2>&1 || die "Bluetooth adapter does not power on"
+}
+
+cmd_off() {
+	$BTCTL power off >/dev/null 2>&1
+	rfkill block bluetooth 2>/dev/null
+	close_window
+}
+
+cmd_reconnect() {
+	adapter_up
+	for mac in $(paired_macs); do
+		info=$($BTCTL info "$mac" 2>/dev/null)
+		echo "$info" | grep -q 'Connected: yes' && continue
+		echo "$info" | grep -q 'Trusted: yes' || continue
+		case $(kind "$info") in
+		audio | headset) $BTCTL --timeout 8 connect "$mac" >/dev/null 2>&1 ;;
+		esac
+	done
+	return 0
+}
+
+cmd=$1
+[ $# -gt 0 ] && shift
+case "$cmd" in
+status) cmd_status ;;
+devices) cmd_devices ;;
+scan) cmd_scan "$@" ;;
+pair) cmd_pair "$@" ;;
+connect) cmd_connect "$@" ;;
+disconnect) cmd_disconnect "$@" ;;
+forget | remove) cmd_forget "$@" ;;
+discoverable) cmd_discoverable "$@" ;;
+on) cmd_on ;;
+off) cmd_off ;;
+reconnect) cmd_reconnect ;;
+*)
+	sed -n '2,18s/^# \{0,1\}//p' "$0" >&2
+	exit 2
+	;;
+esac

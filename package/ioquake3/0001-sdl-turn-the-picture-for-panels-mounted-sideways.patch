@@ -1,0 +1,643 @@
+From: x6100-q3 <x6100-q3@localhost>
+Subject: [PATCH] sdl: turn the picture for panels mounted sideways (r_rotate)
+
+The Xiegu X6100's panel is 480x800, mounted portrait and used as
+800x480, and its display engine (Allwinner A33 DE1) cannot rotate the
+scanout. With r_rotate 90 or 270 the OpenGL1 renderer draws at the
+turned size into a framebuffer object, and GLimp_EndFrame draws that
+turned onto the window before the swap.
+
+SDL has no hardware gamma on KMS/DRM, which turns off r_gamma and
+overbright lighting. With r_rotateGamma (default 1) the rotation pass
+applies the renderer's gamma ramp in a small GLSL 1.10 shader, so both
+work as with hardware gamma.
+
+Everything falls back to the unrotated window when a step is not
+available (no FBOs, no complete FBO, no GLSL).
+---
+ code/sdl/sdl_gamma.c |   6 +
+ code/sdl/sdl_glimp.c | 558 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 563 insertions(+), 1 deletion(-)
+
+diff --git a/code/sdl/sdl_gamma.c b/code/sdl/sdl_gamma.c
+index 1fe4c4b..621d55e 100644
+--- a/code/sdl/sdl_gamma.c
++++ b/code/sdl/sdl_gamma.c
+@@ -31,6 +31,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ 
+ extern SDL_Window *SDL_window;
+ 
++// sdl_glimp.c: the r_rotate pass applies the ramp when it can
++qboolean GLimp_RotSetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] );
++
+ /*
+ =================
+ GLimp_SetGamma
+@@ -44,6 +47,9 @@ void GLimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned
+ 	if( !glConfig.deviceSupportsGamma || r_ignorehwgamma->integer > 0 )
+ 		return;
+ 
++	if ( GLimp_RotSetGamma( red, green, blue ) )
++		return;
++
+ 	for (i = 0; i < 256; i++)
+ 	{
+ 		table[0][i] = ( ( ( Uint16 ) red[i] ) << 8 ) | red[i];
+diff --git a/code/sdl/sdl_glimp.c b/code/sdl/sdl_glimp.c
+index d5c38f6..fcaf96b 100644
+--- a/code/sdl/sdl_glimp.c
++++ b/code/sdl/sdl_glimp.c
+@@ -81,6 +81,542 @@ QGL_ARB_vertex_array_object_PROCS;
+ QGL_EXT_direct_state_access_PROCS;
+ #undef GLE
+ 
++/*
++===============
++Display rotation (r_rotate 90 or 270)
++
++For panels mounted sideways behind a display controller that cannot turn
++the picture, such as the Xiegu X6100's 480x800 panel used as 800x480. The
++game renders at the turned size into a framebuffer object and
++GLimp_EndFrame draws that turned onto the window. With r_rotateGamma the
++same pass applies the gamma ramp, so r_gamma and overbright lighting work
++where SDL has no hardware gamma (KMS/DRM). OpenGL1 renderer only.
++===============
++*/
++
++#ifndef GL_FRAMEBUFFER
++#define GL_FRAMEBUFFER 0x8D40
++#endif
++#ifndef GL_RENDERBUFFER
++#define GL_RENDERBUFFER 0x8D41
++#endif
++#ifndef GL_COLOR_ATTACHMENT0
++#define GL_COLOR_ATTACHMENT0 0x8CE0
++#endif
++#ifndef GL_DEPTH_ATTACHMENT
++#define GL_DEPTH_ATTACHMENT 0x8D00
++#endif
++#ifndef GL_STENCIL_ATTACHMENT
++#define GL_STENCIL_ATTACHMENT 0x8D20
++#endif
++#ifndef GL_FRAMEBUFFER_COMPLETE
++#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
++#endif
++#ifndef GL_DEPTH24_STENCIL8
++#define GL_DEPTH24_STENCIL8 0x88F0
++#endif
++#ifndef GL_DEPTH_COMPONENT16
++#define GL_DEPTH_COMPONENT16 0x81A5
++#endif
++#ifndef GL_DEPTH_COMPONENT24
++#define GL_DEPTH_COMPONENT24 0x81A6
++#endif
++#ifndef GL_CLAMP_TO_EDGE
++#define GL_CLAMP_TO_EDGE 0x812F
++#endif
++#ifndef GL_TEXTURE0
++#define GL_TEXTURE0 0x84C0
++#endif
++#ifndef GL_TEXTURE1
++#define GL_TEXTURE1 0x84C1
++#endif
++#ifndef GL_FRAGMENT_SHADER
++#define GL_FRAGMENT_SHADER 0x8B30
++#endif
++#ifndef GL_VERTEX_SHADER
++#define GL_VERTEX_SHADER 0x8B31
++#endif
++#ifndef GL_COMPILE_STATUS
++#define GL_COMPILE_STATUS 0x8B81
++#endif
++#ifndef GL_LINK_STATUS
++#define GL_LINK_STATUS 0x8B82
++#endif
++
++cvar_t *r_rotate;
++cvar_t *r_rotateGamma;
++
++static struct {
++	qboolean active;	// rendering goes to the framebuffer object
++	qboolean gamma;		// the turning pass applies the gamma ramp
++	int degrees;
++	int winWidth, winHeight;	// the window (the panel as mounted)
++	int width, height;		// what the game renders
++	int texWidth, texHeight;	// power-of-two texture holding it
++	GLuint fbo, colorTex, depthRb, rampTex, program, vs, fs;
++
++	DrawBufferproc *realDrawBuffer;
++
++	void (APIENTRYP GenFramebuffers)( GLsizei n, GLuint *ids );
++	void (APIENTRYP DeleteFramebuffers)( GLsizei n, const GLuint *ids );
++	void (APIENTRYP BindFramebuffer)( GLenum target, GLuint id );
++	void (APIENTRYP FramebufferTexture2D)( GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level );
++	void (APIENTRYP GenRenderbuffers)( GLsizei n, GLuint *ids );
++	void (APIENTRYP DeleteRenderbuffers)( GLsizei n, const GLuint *ids );
++	void (APIENTRYP BindRenderbuffer)( GLenum target, GLuint id );
++	void (APIENTRYP RenderbufferStorage)( GLenum target, GLenum internalformat, GLsizei width, GLsizei height );
++	void (APIENTRYP FramebufferRenderbuffer)( GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer );
++	GLenum (APIENTRYP CheckFramebufferStatus)( GLenum target );
++
++	void (APIENTRYP PushAttrib)( GLbitfield mask );
++	void (APIENTRYP PopAttrib)( void );
++	void (APIENTRYP ActiveTexture)( GLenum texture );
++
++	GLuint (APIENTRYP CreateShader)( GLenum type );
++	void (APIENTRYP DeleteShader)( GLuint shader );
++	void (APIENTRYP ShaderSource)( GLuint shader, GLsizei count, const GLchar *const *string, const GLint *length );
++	void (APIENTRYP CompileShader)( GLuint shader );
++	void (APIENTRYP GetShaderiv)( GLuint shader, GLenum pname, GLint *params );
++	void (APIENTRYP GetShaderInfoLog)( GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog );
++	GLuint (APIENTRYP CreateProgram)( void );
++	void (APIENTRYP DeleteProgram)( GLuint program );
++	void (APIENTRYP AttachShader)( GLuint program, GLuint shader );
++	void (APIENTRYP LinkProgram)( GLuint program );
++	void (APIENTRYP GetProgramiv)( GLuint program, GLenum pname, GLint *params );
++	void (APIENTRYP GetProgramInfoLog)( GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog );
++	void (APIENTRYP UseProgram)( GLuint program );
++	GLint (APIENTRYP GetUniformLocation)( GLuint program, const GLchar *name );
++	void (APIENTRYP Uniform1i)( GLint location, GLint v0 );
++} rot;
++
++static void *GLimp_RotGetProc( const char *name, const char *suffix )
++{
++	char buf[64];
++
++	Com_sprintf( buf, sizeof( buf ), "gl%s%s", name, suffix );
++	return SDL_GL_GetProcAddress( buf );
++}
++
++// While the framebuffer object is bound, GL_BACK (r_drawBuffer) means its
++// colour attachment.
++static void APIENTRY GLimp_RotDrawBuffer( GLenum mode )
++{
++	rot.realDrawBuffer( rot.active ? GL_COLOR_ATTACHMENT0 : mode );
++}
++
++static const char *rotVertexShader =
++	"#version 110\n"
++	"varying vec2 v_st;\n"
++	"void main() {\n"
++	"	v_st = gl_MultiTexCoord0.xy;\n"
++	"	gl_Position = gl_Vertex;\n"
++	"}\n";
++
++// The ramp is a 256x1 texture; the coordinate picks texel c * 255.
++static const char *rotFragmentShader =
++	"#version 110\n"
++	"uniform sampler2D u_image;\n"
++	"uniform sampler2D u_ramp;\n"
++	"varying vec2 v_st;\n"
++	"void main() {\n"
++	"	vec3 c = texture2D(u_image, v_st).rgb * (255.0 / 256.0) + (0.5 / 256.0);\n"
++	"	gl_FragColor = vec4(texture2D(u_ramp, vec2(c.r, 0.5)).r,\n"
++	"	                    texture2D(u_ramp, vec2(c.g, 0.5)).g,\n"
++	"	                    texture2D(u_ramp, vec2(c.b, 0.5)).b, 1.0);\n"
++	"}\n";
++
++static GLuint GLimp_RotCompile( GLenum type, const char *src )
++{
++	GLuint s = rot.CreateShader( type );
++	GLint ok = 0;
++	char info[1024];
++
++	rot.ShaderSource( s, 1, &src, NULL );
++	rot.CompileShader( s );
++	rot.GetShaderiv( s, GL_COMPILE_STATUS, &ok );
++	if ( !ok ) {
++		info[0] = 0;
++		rot.GetShaderInfoLog( s, sizeof( info ), NULL, info );
++		ri.Printf( PRINT_ALL, "r_rotateGamma: shader does not compile: %s\n", info );
++		rot.DeleteShader( s );
++		return 0;
++	}
++	return s;
++}
++
++static qboolean GLimp_RotInitGamma( void )
++{
++	GLint ok = 0;
++	byte ramp[256][4];
++	int i;
++	char info[1024];
++
++	if ( !QGL_VERSION_ATLEAST( 2, 0 ) || !rot.ActiveTexture ) {
++		ri.Printf( PRINT_ALL, "r_rotateGamma: needs OpenGL 2.0\n" );
++		return qfalse;
++	}
++
++#define ROT_PROC( field ) rot.field = GLimp_RotGetProc( #field, "" ); if ( !rot.field ) return qfalse;
++	ROT_PROC( CreateShader )
++	ROT_PROC( DeleteShader )
++	ROT_PROC( ShaderSource )
++	ROT_PROC( CompileShader )
++	ROT_PROC( GetShaderiv )
++	ROT_PROC( GetShaderInfoLog )
++	ROT_PROC( CreateProgram )
++	ROT_PROC( DeleteProgram )
++	ROT_PROC( AttachShader )
++	ROT_PROC( LinkProgram )
++	ROT_PROC( GetProgramiv )
++	ROT_PROC( GetProgramInfoLog )
++	ROT_PROC( UseProgram )
++	ROT_PROC( GetUniformLocation )
++	ROT_PROC( Uniform1i )
++#undef ROT_PROC
++
++	rot.vs = GLimp_RotCompile( GL_VERTEX_SHADER, rotVertexShader );
++	rot.fs = GLimp_RotCompile( GL_FRAGMENT_SHADER, rotFragmentShader );
++	if ( !rot.vs || !rot.fs )
++		return qfalse;
++
++	rot.program = rot.CreateProgram();
++	rot.AttachShader( rot.program, rot.vs );
++	rot.AttachShader( rot.program, rot.fs );
++	rot.LinkProgram( rot.program );
++	rot.GetProgramiv( rot.program, GL_LINK_STATUS, &ok );
++	if ( !ok ) {
++		info[0] = 0;
++		rot.GetProgramInfoLog( rot.program, sizeof( info ), NULL, info );
++		ri.Printf( PRINT_ALL, "r_rotateGamma: shaders do not link: %s\n", info );
++		return qfalse;
++	}
++	rot.UseProgram( rot.program );
++	rot.Uniform1i( rot.GetUniformLocation( rot.program, "u_image" ), 0 );
++	rot.Uniform1i( rot.GetUniformLocation( rot.program, "u_ramp" ), 1 );
++	rot.UseProgram( 0 );
++
++	// Identity until the renderer sets its ramp.
++	for ( i = 0; i < 256; i++ ) {
++		ramp[i][0] = ramp[i][1] = ramp[i][2] = i;
++		ramp[i][3] = 255;
++	}
++	qglGenTextures( 1, &rot.rampTex );
++	qglBindTexture( GL_TEXTURE_2D, rot.rampTex );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
++	qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, ramp );
++	qglBindTexture( GL_TEXTURE_2D, 0 );
++
++	return qtrue;
++}
++
++static void GLimp_RotFreeGamma( void )
++{
++	if ( rot.UseProgram )
++		rot.UseProgram( 0 );
++	if ( rot.program )
++		rot.DeleteProgram( rot.program );
++	if ( rot.vs )
++		rot.DeleteShader( rot.vs );
++	if ( rot.fs )
++		rot.DeleteShader( rot.fs );
++	if ( rot.rampTex )
++		qglDeleteTextures( 1, &rot.rampTex );
++	rot.program = rot.vs = rot.fs = rot.rampTex = 0;
++	rot.gamma = qfalse;
++}
++
++static void GLimp_RotFree( void )
++{
++	GLimp_RotFreeGamma();
++	if ( rot.BindFramebuffer )
++		rot.BindFramebuffer( GL_FRAMEBUFFER, 0 );
++	if ( rot.fbo )
++		rot.DeleteFramebuffers( 1, &rot.fbo );
++	if ( rot.depthRb )
++		rot.DeleteRenderbuffers( 1, &rot.depthRb );
++	if ( rot.colorTex )
++		qglDeleteTextures( 1, &rot.colorTex );
++	if ( rot.realDrawBuffer )
++		qglDrawBuffer = rot.realDrawBuffer;
++	Com_Memset( &rot, 0, sizeof( rot ) );
++}
++
++/*
++===============
++GLimp_RotInit
++
++After the window and context exist: when r_rotate asks for it, make the
++framebuffer object and report its size to the renderer as the screen.
++===============
++*/
++static void GLimp_RotInit( qboolean fixedFunction )
++{
++	static const struct { GLenum format; int depth, stencil; } depthFormats[] = {
++		{ GL_DEPTH24_STENCIL8, 24, 8 },
++		{ GL_DEPTH_COMPONENT24, 24, 0 },
++		{ GL_DEPTH_COMPONENT16, 16, 0 },
++	};
++	static const GLenum colorFormats[] = { GL_RGB, GL_RGBA };
++	const char *suffix;
++	qboolean packedDepthStencil;
++	GLint maxSize = 0;
++	int c, i = 0;
++
++	Com_Memset( &rot, 0, sizeof( rot ) );
++
++	if ( r_rotate->integer == 0 )
++		return;
++	if ( r_rotate->integer != 90 && r_rotate->integer != 270 ) {
++		ri.Printf( PRINT_ALL, "r_rotate: %d is not 0, 90 or 270, not rotating\n", r_rotate->integer );
++		return;
++	}
++	if ( !fixedFunction ) {
++		ri.Printf( PRINT_ALL, "r_rotate: only the opengl1 renderer can rotate\n" );
++		return;
++	}
++
++	if ( QGL_VERSION_ATLEAST( 3, 0 ) || SDL_GL_ExtensionSupported( "GL_ARB_framebuffer_object" ) ) {
++		suffix = "";
++		packedDepthStencil = qtrue;
++	} else if ( SDL_GL_ExtensionSupported( "GL_EXT_framebuffer_object" ) ) {
++		suffix = "EXT";
++		packedDepthStencil = SDL_GL_ExtensionSupported( "GL_EXT_packed_depth_stencil" ) ? qtrue : qfalse;
++	} else {
++		ri.Printf( PRINT_ALL, "r_rotate: no framebuffer objects, not rotating\n" );
++		return;
++	}
++
++#define ROT_PROC( field, sfx ) rot.field = GLimp_RotGetProc( #field, sfx ); \
++	if ( !rot.field ) { ri.Printf( PRINT_ALL, "r_rotate: no gl%s%s\n", #field, sfx ); Com_Memset( &rot, 0, sizeof( rot ) ); return; }
++	ROT_PROC( GenFramebuffers, suffix )
++	ROT_PROC( DeleteFramebuffers, suffix )
++	ROT_PROC( BindFramebuffer, suffix )
++	ROT_PROC( FramebufferTexture2D, suffix )
++	ROT_PROC( GenRenderbuffers, suffix )
++	ROT_PROC( DeleteRenderbuffers, suffix )
++	ROT_PROC( BindRenderbuffer, suffix )
++	ROT_PROC( RenderbufferStorage, suffix )
++	ROT_PROC( FramebufferRenderbuffer, suffix )
++	ROT_PROC( CheckFramebufferStatus, suffix )
++	ROT_PROC( PushAttrib, "" )
++	ROT_PROC( PopAttrib, "" )
++#undef ROT_PROC
++	rot.ActiveTexture = GLimp_RotGetProc( "ActiveTexture", "" );
++	if ( !rot.ActiveTexture )
++		rot.ActiveTexture = GLimp_RotGetProc( "ActiveTexture", "ARB" );
++
++	rot.degrees = r_rotate->integer;
++	rot.winWidth = glConfig.vidWidth;
++	rot.winHeight = glConfig.vidHeight;
++	rot.width = rot.winHeight;
++	rot.height = rot.winWidth;
++	for ( rot.texWidth = 1; rot.texWidth < rot.width; rot.texWidth <<= 1 )
++		;
++	for ( rot.texHeight = 1; rot.texHeight < rot.height; rot.texHeight <<= 1 )
++		;
++	qglGetIntegerv( GL_MAX_TEXTURE_SIZE, &maxSize );
++	if ( rot.texWidth > maxSize || rot.texHeight > maxSize ) {
++		ri.Printf( PRINT_ALL, "r_rotate: %dx%d is more than the GPU's %d, not rotating\n",
++			rot.texWidth, rot.texHeight, maxSize );
++		Com_Memset( &rot, 0, sizeof( rot ) );
++		return;
++	}
++
++	qglGenTextures( 1, &rot.colorTex );
++	qglBindTexture( GL_TEXTURE_2D, rot.colorTex );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
++	qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
++	qglBindTexture( GL_TEXTURE_2D, 0 );
++
++	rot.GenFramebuffers( 1, &rot.fbo );
++	rot.BindFramebuffer( GL_FRAMEBUFFER, rot.fbo );
++	rot.FramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rot.colorTex, 0 );
++
++	// RGB like the window (blending with GL_DST_ALPHA sees 1), else RGBA;
++	// depth and stencil like the window, else less.
++	for ( c = 0; c < ARRAY_LEN( colorFormats ) && !rot.depthRb; c++ ) {
++		qglBindTexture( GL_TEXTURE_2D, rot.colorTex );
++		qglTexImage2D( GL_TEXTURE_2D, 0, colorFormats[c], rot.texWidth, rot.texHeight, 0,
++			colorFormats[c], GL_UNSIGNED_BYTE, NULL );
++		qglBindTexture( GL_TEXTURE_2D, 0 );
++
++		for ( i = 0; i < ARRAY_LEN( depthFormats ); i++ ) {
++			if ( depthFormats[i].stencil && !packedDepthStencil )
++				continue;
++
++			rot.GenRenderbuffers( 1, &rot.depthRb );
++			rot.BindRenderbuffer( GL_RENDERBUFFER, rot.depthRb );
++			rot.RenderbufferStorage( GL_RENDERBUFFER, depthFormats[i].format, rot.texWidth, rot.texHeight );
++			rot.BindRenderbuffer( GL_RENDERBUFFER, 0 );
++			rot.FramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rot.depthRb );
++			rot.FramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER,
++				depthFormats[i].stencil ? rot.depthRb : 0 );
++
++			if ( rot.CheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE )
++				break;
++
++			rot.FramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0 );
++			rot.FramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0 );
++			rot.DeleteRenderbuffers( 1, &rot.depthRb );
++			rot.depthRb = 0;
++		}
++	}
++
++	if ( !rot.depthRb ) {
++		ri.Printf( PRINT_ALL, "r_rotate: no complete framebuffer object, not rotating\n" );
++		GLimp_RotFree();
++		return;
++	}
++
++	glConfig.depthBits = depthFormats[i].depth;
++	glConfig.stencilBits = depthFormats[i].stencil;
++
++	if ( r_rotateGamma->integer ) {
++		rot.gamma = GLimp_RotInitGamma();
++		if ( !rot.gamma ) {
++			ri.Printf( PRINT_ALL, "r_rotateGamma: not available, no gamma ramp\n" );
++			GLimp_RotFreeGamma();
++		}
++	}
++
++	rot.realDrawBuffer = qglDrawBuffer;
++	qglDrawBuffer = GLimp_RotDrawBuffer;
++	rot.active = qtrue;
++	qglDrawBuffer( GL_BACK );
++
++	glConfig.vidWidth = rot.width;
++	glConfig.vidHeight = rot.height;
++	glConfig.windowAspect = (float)rot.width / (float)rot.height;
++	displayAspect = glConfig.windowAspect;
++
++	ri.Printf( PRINT_ALL, "Display rotated %d degrees: rendering %dx%d for a %dx%d window, "
++		"%s, %d depth, %d stencil, %s\n", rot.degrees, rot.width, rot.height, rot.winWidth, rot.winHeight,
++		colorFormats[c - 1] == GL_RGB ? "RGB" : "RGBA", glConfig.depthBits, glConfig.stencilBits,
++		rot.gamma ? "gamma ramp in the rotation pass" : "no gamma ramp" );
++}
++
++/*
++===============
++GLimp_RotSetGamma
++
++Called by GLimp_SetGamma; false when the rotation pass has no gamma ramp.
++===============
++*/
++qboolean GLimp_RotSetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] )
++{
++	byte ramp[256][4];
++	int i;
++
++	if ( !rot.active || !rot.gamma )
++		return qfalse;
++
++	for ( i = 0; i < 256; i++ ) {
++		ramp[i][0] = red[i];
++		ramp[i][1] = green[i];
++		ramp[i][2] = blue[i];
++		ramp[i][3] = 255;
++	}
++
++	// The renderer caches its texture bindings: leave them as they were.
++	rot.PushAttrib( GL_TEXTURE_BIT );
++	qglBindTexture( GL_TEXTURE_2D, rot.rampTex );
++	qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, ramp );
++	rot.PopAttrib();
++	return qtrue;
++}
++
++/*
++===============
++GLimp_RotDraw
++
++Draw the rendered frame turned onto the window, leaving all of the
++renderer's GL state as it was.
++===============
++*/
++static void GLimp_RotDraw( void )
++{
++	// Texture coordinates at the window corners (-1,-1) (1,-1) (1,1) (-1,1).
++	// 270: game (x, y down) lands at panel (y, 799 - x), like x6100-ui's
++	// --rotate 270 and the kernel's DT rotation; 90 is the other way round.
++	float s = (float)rot.width / rot.texWidth;
++	float t = (float)rot.height / rot.texHeight;
++	float st270[4][2] = { { 0, t }, { 0, 0 }, { s, 0 }, { s, t } };
++	float st90[4][2] = { { s, 0 }, { s, t }, { 0, t }, { 0, 0 } };
++	float (*st)[2] = rot.degrees == 270 ? st270 : st90;
++	static const float xy[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
++	int i;
++
++	rot.BindFramebuffer( GL_FRAMEBUFFER, 0 );
++	rot.realDrawBuffer( GL_BACK );
++
++	rot.PushAttrib( GL_ALL_ATTRIB_BITS );
++
++	if ( rot.ActiveTexture ) {
++		rot.ActiveTexture( GL_TEXTURE1 );
++		qglDisable( GL_TEXTURE_2D );
++		if ( rot.gamma )
++			qglBindTexture( GL_TEXTURE_2D, rot.rampTex );
++		rot.ActiveTexture( GL_TEXTURE0 );
++	}
++	qglEnable( GL_TEXTURE_2D );
++	qglBindTexture( GL_TEXTURE_2D, rot.colorTex );
++	qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE );
++
++	qglDisable( GL_DEPTH_TEST );
++	qglDisable( GL_STENCIL_TEST );
++	qglDisable( GL_BLEND );
++	qglDisable( GL_ALPHA_TEST );
++	qglDisable( GL_CULL_FACE );
++	qglDisable( GL_SCISSOR_TEST );
++	qglDisable( GL_FOG );
++	qglDisable( GL_LIGHTING );
++	qglDisable( GL_POLYGON_OFFSET_FILL );
++	qglDisable( GL_CLIP_PLANE0 );
++	qglDisable( GL_TEXTURE_GEN_S );
++	qglDisable( GL_TEXTURE_GEN_T );
++	qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
++	qglColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
++	qglColor4f( 1, 1, 1, 1 );
++	qglViewport( 0, 0, rot.winWidth, rot.winHeight );
++
++	qglMatrixMode( GL_TEXTURE );
++	qglPushMatrix();
++	qglLoadIdentity();
++	qglMatrixMode( GL_MODELVIEW );
++	qglPushMatrix();
++	qglLoadIdentity();
++	qglMatrixMode( GL_PROJECTION );
++	qglPushMatrix();
++	qglLoadIdentity();
++
++	if ( rot.gamma )
++		rot.UseProgram( rot.program );
++
++	qglBegin( GL_TRIANGLE_FAN );
++	for ( i = 0; i < 4; i++ ) {
++		qglTexCoord2f( st[i][0], st[i][1] );
++		qglVertex2f( xy[i][0], xy[i][1] );
++	}
++	qglEnd();
++
++	if ( rot.gamma )
++		rot.UseProgram( 0 );
++
++	qglMatrixMode( GL_PROJECTION );
++	qglPopMatrix();
++	qglMatrixMode( GL_MODELVIEW );
++	qglPopMatrix();
++	qglMatrixMode( GL_TEXTURE );
++	qglPopMatrix();
++
++	rot.PopAttrib();
++}
++
+ /*
+ ===============
+ GLimp_Shutdown
+@@ -90,6 +626,9 @@ void GLimp_Shutdown( void )
+ {
+ 	ri.IN_Shutdown();
+ 
++	if ( rot.active )
++		GLimp_RotFree();
++
+ 	SDL_QuitSubSystem( SDL_INIT_VIDEO );
+ }
+ 
+@@ -1084,6 +1623,10 @@ void GLimp_Init( qboolean fixedFunction )
+ 	r_allowResize = ri.Cvar_Get( "r_allowResize", "0", CVAR_ARCHIVE | CVAR_LATCH );
+ 	r_centerWindow = ri.Cvar_Get( "r_centerWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
+ 	r_preferOpenGLES = ri.Cvar_Get( "r_preferOpenGLES", "-1", CVAR_ARCHIVE | CVAR_LATCH );
++	r_rotate = ri.Cvar_Get( "r_rotate", "0", CVAR_ARCHIVE | CVAR_LATCH );
++	ri.Cvar_SetDescription( r_rotate, "Turn the picture for a panel mounted sideways: 0, 90 or 270 degrees (opengl1 renderer)" );
++	r_rotateGamma = ri.Cvar_Get( "r_rotateGamma", "1", CVAR_ARCHIVE | CVAR_LATCH );
++	ri.Cvar_SetDescription( r_rotateGamma, "Apply r_gamma and overbright lighting in the r_rotate pass" );
+ 
+ 	if( ri.Cvar_VariableIntegerValue( "com_abnormalExit" ) )
+ 	{
+@@ -1168,6 +1711,11 @@ success:
+ 	// initialize extensions
+ 	GLimp_InitExtensions( fixedFunction );
+ 
++	// render into a framebuffer object and turn it at the swap (r_rotate)
++	GLimp_RotInit( fixedFunction );
++	if ( rot.gamma && !r_ignorehwgamma->integer )
++		glConfig.deviceSupportsGamma = qtrue;
++
+ 	ri.Cvar_Get( "r_availableModes", "", CVAR_ROM );
+ 
+ 	// This depends on SDL_INIT_VIDEO, hence having it here
+@@ -1184,8 +1732,16 @@ Responsible for doing a swapbuffers
+ */
+ void GLimp_EndFrame( void )
+ {
++	if ( rot.active )
++	{
++		// draw the frame turned onto the window, then render the next one
++		// into the framebuffer object again
++		GLimp_RotDraw();
++		SDL_GL_SwapWindow( SDL_window );
++		rot.BindFramebuffer( GL_FRAMEBUFFER, rot.fbo );
++	}
+ 	// don't flip if drawing to front buffer
+-	if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 )
++	else if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 )
+ 	{
+ 		SDL_GL_SwapWindow( SDL_window );
+ 	}

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Audio: one system-wide PipeWire with WirePlumber, for the game's sound
+# on Bluetooth headphones or speakers, or a USB sound card. The A33 codec
+# is off in the device tree (its output is the transmitter's modem
+# input), so without those the default output is a silent sink.
+
+RUN=/run/pipewire
+export PIPEWIRE_RUNTIME_DIR=$RUN XDG_RUNTIME_DIR=$RUN
+export XDG_STATE_HOME=/var/lib/x6100/state
+
+start() {
+	printf 'Starting audio: '
+	mkdir -p $RUN "$XDG_STATE_HOME"
+	start-stop-daemon -S -q -b -m -p /run/pipewire.pid -x /usr/bin/pipewire
+	i=0
+	while [ ! -S $RUN/pipewire-0 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+	start-stop-daemon -S -q -b -m -p /run/wireplumber.pid -x /usr/bin/wireplumber -- \
+		--profile x6100
+	echo "OK"
+}
+
+stop() {
+	printf 'Stopping audio: '
+	for d in wireplumber pipewire; do
+		start-stop-daemon -K -q -p /run/$d.pid 2>/dev/null
+		rm -f /run/$d.pid
+	done
+	echo "OK"
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart) stop; sleep 1; start ;;
+*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

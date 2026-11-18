@@ -1,0 +1,5 @@
+menu "x6100-q3 (Xiegu X6100)"
+	source "$BR2_EXTERNAL_X6100_PATH/package/x6100-launcher/Config.in"
+	source "$BR2_EXTERNAL_X6100_PATH/package/x6100-btd/Config.in"
+	source "$BR2_EXTERNAL_X6100_PATH/package/ioquake3/Config.in"
+endmenu

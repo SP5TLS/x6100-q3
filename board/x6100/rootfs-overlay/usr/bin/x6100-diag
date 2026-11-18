@@ -1,0 +1,36 @@
+#!/bin/sh
+# x6100-diag [FILE]: collect what is needed to debug the system (kernel
+# log, devices, Wi-Fi, Bluetooth, audio, launcher and game logs) into
+# FILE, by default /mnt/x6100-diag.txt (readable from a PC).
+out=${1:-/mnt/x6100-diag.txt}
+sec() { printf '\n===== %s\n' "$*"; }
+run() { sec "$*"; sh -c "$*" 2>&1; }
+{
+	sec "x6100-diag $(date -u)"
+	cat /etc/x6100-release
+	run uname -a
+	run cat /proc/cmdline
+	run uptime
+	run 'ls -l /dev/fb* /dev/dri /dev/input/ /dev/rtc*'
+	run 'for e in /sys/class/input/event*; do echo "${e##*/}: $(cat $e/device/name)"; done'
+	run 'grep -E "usb|musb|ehci|ohci|rtl|bt|gpu|lima|drm|keypad|rotary|axp" /proc/interrupts'
+	run lsusb
+	run 'lsusb -t'
+	run lsmod
+	run 'ip addr'
+	run 'iw dev; iw reg get'
+	run 'rfkill list'
+	run 'nmcli general; nmcli device; nmcli -f IN-USE,SSID,SIGNAL,SECURITY device wifi list'
+	run 'bluetoothctl show; x6100-bt devices'
+	run 'wpctl status'
+	run 'ps w'
+	run 'df -h; mount'
+	run 'ls -lR /data/quake3 /mnt/quake3'
+	run 'tail -n 100 /data/log/launcher.log'
+	run 'tail -n 100 /data/log/quake3.log'
+	run 'tail -n 100 /var/log/messages'
+	run dmesg
+} > "$out.tmp" 2>&1
+mv "$out.tmp" "$out"
+sync
+echo "wrote $out"

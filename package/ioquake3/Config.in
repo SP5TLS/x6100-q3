@@ -1,0 +1,23 @@
+config BR2_PACKAGE_IOQUAKE3
+	bool "ioquake3"
+	depends on BR2_PACKAGE_SDL2_KMSDRM
+	depends on BR2_PACKAGE_MESA3D_OPENGL_EGL
+	select BR2_PACKAGE_ZLIB
+	select BR2_PACKAGE_JPEG
+	select BR2_PACKAGE_LIBVORBIS
+	select BR2_PACKAGE_OPUSFILE
+	help
+	  Quake III Arena engine (ioquake3) on the Mali-400 GPU: Mesa's
+	  lima driver, desktop OpenGL through EGL, SDL2's KMS/DRM video
+	  driver. The OpenGL1 renderer turns the picture for the X6100's
+	  sideways panel (r_rotate) and applies the gamma ramp in the same
+	  pass. zlib, libjpeg, Ogg Vorbis and Opus come from Buildroot, not
+	  ioquake3's bundled copies.
+
+	  No game data is included: it is the user's own copy of the
+	  game, uploaded through x6100-launcher's web page.
+
+	  https://ioquake3.org/
+
+comment "ioquake3 needs SDL2 with KMS/DRM and Mesa with EGL"
+	depends on !BR2_PACKAGE_SDL2_KMSDRM || !BR2_PACKAGE_MESA3D_OPENGL_EGL

@@ -1,0 +1,18 @@
+[package]
+name = "x6100-launcher"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "x6100-q3's start screen and web page: Wi-Fi, Bluetooth, Quake 3 game data, play"
+publish = false
+
+# No dependencies on purpose: Buildroot builds this offline from the
+# repository, and the binary's licence story stays one file (plus the
+# public-domain font in fonts/).
+[dependencies]
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1

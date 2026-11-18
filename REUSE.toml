@@ -1,0 +1,33 @@
+# Licences per path (https://reuse.software/spec-3.3/). A licence header
+# in a file wins over these (precedence "closest").
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 The x6100-q3 contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+[[annotations]]
+path = ["launcher/**", "package/x6100-btd/src/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 The x6100-q3 contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "launcher/fonts/10x20.bdf"
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+[[annotations]]
+path = "board/x6100/patches/linux/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The x6100-q3 contributors"
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = ["board/x6100/patches/uboot/**", "package/ioquake3/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The x6100-q3 contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
